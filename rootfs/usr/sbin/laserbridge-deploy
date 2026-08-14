@@ -72,7 +72,14 @@ case "$command" in
 		# Whole disks only: a removable USB stick is never a deployment target.
 		for path in /sys/block/*; do
 			name=$(basename "$path")
-			case "$name" in loop*|ram*|zram*|sr*|fd*|dm-*) continue ;; esac
+			# eMMC exposes its hardware boot and RPMB areas as separate
+			# block devices. They are a few megabytes of firmware storage,
+			# never a deployment target, and listing them would make an
+			# ordinary eMMC device look like it had three disks.
+			case "$name" in
+				loop*|ram*|zram*|sr*|fd*|dm-*) continue ;;
+				mmcblk*boot*|mmcblk*rpmb) continue ;;
+			esac
 			[ "$(cat "$path/removable" 2>/dev/null || echo 1)" = "0" ] || continue
 			sectors=$(cat "$path/size" 2>/dev/null || echo 0)
 			[ "$sectors" -gt 0 ] || continue
