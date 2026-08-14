@@ -84,7 +84,6 @@ PermitRootLogin no
 PasswordAuthentication %s
 KbdInteractiveAuthentication no
 PermitEmptyPasswords no
-UsePAM no
 AllowUsers laserbridge
 PidFile /run/sshd.pid
 Subsystem sftp internal-sftp
@@ -110,7 +109,14 @@ Subsystem sftp internal-sftp
 	if err := atomicfile.Write(filepath.Join(m.Dir, "hostapd.conf"), []byte(hostapd), 0600); err != nil {
 		return err
 	}
-	dnsmasq := "bind-interfaces\nport=53\ndhcp-range=10.42.0.10,10.42.0.100,255.255.255.0,12h\ndhcp-option=3,10.42.0.1\ndhcp-option=6,10.42.0.1\naddress=/#/10.42.0.1\n"
+	// The lease file has to live on a writable filesystem. Its default sits
+	// under /var/lib/misc on the read-only SquashFS root, so dnsmasq exited
+	// with "cannot open or create lease file" and the setup access point
+	// handed out no addresses at all - the appliance associated clients and
+	// then left them without an IP. no-resolv keeps it from consulting an
+	// empty /run/resolv.conf; the captive-portal answer below is the only
+	// one it ever needs to give.
+	dnsmasq := "bind-interfaces\nport=53\nno-resolv\ndhcp-leasefile=/run/laserbridge/dnsmasq.leases\ndhcp-range=10.42.0.10,10.42.0.100,255.255.255.0,12h\ndhcp-option=3,10.42.0.1\ndhcp-option=6,10.42.0.1\naddress=/#/10.42.0.1\n"
 	if err := atomicfile.Write(filepath.Join(m.Dir, "dnsmasq.conf"), []byte(dnsmasq), 0644); err != nil {
 		return err
 	}

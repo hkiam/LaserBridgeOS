@@ -14,5 +14,5 @@ error_logger="logger -t ustreamer"
 
 depend() {
 	need laserbridge-init
-	after devfs mdev
+	after devfs mdev networking laserbridge-network
 }

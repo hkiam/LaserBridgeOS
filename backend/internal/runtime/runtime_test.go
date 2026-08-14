@@ -55,6 +55,14 @@ func TestApplyGeneratesRuntimeConfiguration(t *testing.T) {
 	if len(runner.calls) != 1 || runner.calls[0] != "hostname laserbridge" {
 		t.Fatalf("calls = %v", runner.calls)
 	}
+	// dnsmasq must be told where to keep its leases. Its default lives on the
+	// read-only root, where it cannot create the file and exits instead - the
+	// setup access point then associates clients and hands out no addresses.
+	dnsmasq, _ := os.ReadFile(filepath.Join(manager.Dir, "dnsmasq.conf"))
+	if !strings.Contains(string(dnsmasq), "dhcp-leasefile=/run/") {
+		t.Fatalf("dnsmasq would write its leases to the read-only root:\n%s", dnsmasq)
+	}
+
 	mode, _ := os.ReadFile(filepath.Join(manager.Dir, "network-mode"))
 	if string(mode) != "ap\n" {
 		t.Fatalf("first-boot network mode = %q", mode)

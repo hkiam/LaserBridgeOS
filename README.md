@@ -307,6 +307,11 @@ turn off auto-join for your usual network first, and stay close to the device.
 
 ### Installing
 
+A deployment has two phases, and **the appliance changes address between
+them**. Treat that as the normal course of events rather than a fault.
+
+**Phase one — into RAM.**
+
 ```sh
 ./deploy.sh --dry-run --install ./dist   # prints the plan, changes nothing
 ./deploy.sh --install ./dist
@@ -315,14 +320,35 @@ turn off auto-join for your usual network first, and stay close to the device.
 The second command prints the target, the disk, its size and the image
 version, and requires the disk path to be typed back before it proceeds.
 `--yes` skips that prompt and should be reserved for unattended use — it
-removes the last thing standing between a typo and a wiped disk.
+removes the last thing standing between a typo and a wiped disk. A context
+with no terminal, such as an editor or an agent, cannot answer the prompt and
+is told to use `--yes` deliberately.
 
-Expect the run to take several minutes: roughly 180 MiB of initramfs cross
-the network before the kexec, then the compressed image, then a full read-back
-of the disk for verification. `deploy.sh` reports each stage. If it seems to
-stall right after `Rebooting into RAM via kexec`, the appliance is probably up
-under a different DHCP lease; it is searched for under `laserbridge.local`
-as well.
+**Between the phases — find the appliance again.** Once the kexec has
+happened, the RAM system asks DHCP under the name `laserbridge` rather than
+whatever the installed system was called, so the router usually hands it a
+**different lease**. If it has no credentials for any network — the normal
+case for a device without a cable — it raises its own access point at
+`10.42.0.1` instead. `laserbridge.local` may answer late, or answer with a
+stale address from a previous session.
+
+`deploy.sh` tries the configured address, `laserbridge.local` and `10.42.0.1`
+in turn. When none of them is right, look the address up in the router or
+join `LaserBridge-XXXXXX`, and name it explicitly:
+
+```sh
+./deploy.sh --resume --install --recovery-host laserbridge@10.42.0.1 ./dist
+```
+
+**Phase two — onto the disk.** `--resume` skips the kexec and writes to the
+RAM system that is already running. It is not a recovery path bolted on after
+the fact; on a device that has to move address it is the ordinary second half
+of the procedure.
+
+Expect several minutes: roughly 180 MiB of initramfs before the kexec, then
+the image compressed (about 384 MiB rather than 962), then a full read-back
+for verification. Over the appliance's own access point that is far slower —
+one measured install took 31 minutes for the image alone.
 
 After the reboot the appliance is in factory state: setup wizard pending,
 default password, no Wi-Fi.
@@ -393,6 +419,17 @@ does not terminate HTTPS, so management traffic should not cross an untrusted
 network.
 
 ## Troubleshooting
+
+### The setup hotspot appears but gives out no IP address
+
+Fixed in images built after August 2026. `dnsmasq` kept its lease file under
+`/var/lib/misc`, which is on the read-only SquashFS root, so it exited with
+`cannot open or create lease file: Read-only file system` and the access point
+associated clients without ever answering their DHCP requests. The lease file
+now lives under `/run`.
+
+On an affected image, configure the address by hand: `10.42.0.60/24` with
+gateway and DNS `10.42.0.1`, then open `http://10.42.0.1`.
 
 ### The setup Wi-Fi does not appear
 

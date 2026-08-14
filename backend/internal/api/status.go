@@ -56,6 +56,13 @@ func (s *Server) status(w http.ResponseWriter, _ *http.Request) {
 	for _, name := range []string{"ser2net", "ustreamer", "sshd", "avahi-daemon", "laserbridge-web"} {
 		services[name] = s.serviceRunning(name)
 	}
+	// supervise-daemon reports "started" for as long as the supervisor lives,
+	// even while the program it supervises exits on every attempt. That is
+	// how a GRBL bridge that never once managed to bind its port could be
+	// reported as running. Where a service exists to answer on a port, ask
+	// the port.
+	services["ser2net"] = services["ser2net"] && listening(cfg.GRBL.Port)
+	services["ustreamer"] = services["ustreamer"] && listening(cfg.Camera.Port)
 	version := readTrimmed(s.VersionPath)
 	if version == "" {
 		version = "development"
@@ -149,7 +156,18 @@ func storage(path string) storageStatus {
 	return storageStatus{FreeBytes: stat.Bavail * uint64(stat.Bsize), TotalBytes: stat.Blocks * uint64(stat.Bsize)}
 }
 
+// listening reports whether anything holds a listening socket on the port.
+func listening(port int) bool {
+	return countTCP(port, "0A") > 0
+}
+
 func tcpClients(port int) int {
+	return countTCP(port, "01")
+}
+
+// countTCP counts sockets on a local port in the given state, as /proc spells
+// it: 0A is LISTEN, 01 is ESTABLISHED.
+func countTCP(port int, state string) int {
 	needle := strings.ToUpper(strconv.FormatInt(int64(port), 16))
 	needle = strings.Repeat("0", 4-len(needle)) + needle
 	count := 0
@@ -160,7 +178,7 @@ func tcpClients(port int) int {
 		}
 		for _, line := range strings.Split(string(data), "\n") {
 			fields := strings.Fields(line)
-			if len(fields) > 3 && strings.HasSuffix(fields[1], ":"+needle) && fields[3] == "01" {
+			if len(fields) > 3 && strings.HasSuffix(fields[1], ":"+needle) && fields[3] == state {
 				count++
 			}
 		}

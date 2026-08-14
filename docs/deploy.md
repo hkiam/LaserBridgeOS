@@ -30,6 +30,30 @@ came up serving its web interface from RAM, with the 58 GiB eMMC untouched -
 Launching from LaserBridgeOS itself does not work yet; see "The kexec
 blocker".
 
+### Finding the appliance between the two phases
+
+This is a step of the procedure, not an exception to it. After the kexec the
+appliance is a different machine on the network than the one you handed over
+to, and there are three places it can be:
+
+| Where | When |
+| --- | --- |
+| a new DHCP lease | it has credentials for a network and joined it |
+| `10.42.0.1` | it has none, so it raised `LaserBridge-XXXXXX` itself |
+| the old address | only if the router happened to reuse the lease |
+
+`deploy.sh` tries the configured target, `laserbridge.local` and `10.42.0.1`.
+Name it directly whenever you know better — mDNS can answer late, or answer
+with an address from a previous session:
+
+```sh
+./deploy.sh --resume --install --recovery-host laserbridge@10.42.0.1 ./dist
+```
+
+`--resume` exists for this: it skips the kexec and writes to the RAM system
+already running, so a lost or changed address costs a command line rather
+than the whole deployment.
+
 ### The RAM system takes a different address
 
 It sends `laserbridge` as its DHCP hostname rather than the installed

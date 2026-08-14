@@ -7,8 +7,12 @@
 #   ./deploy.sh --status                 report what the target is running
 #   ./deploy.sh --check    <image-dir>   verify prerequisites, change nothing
 #
-#   --resume  write to an appliance that is already running from RAM, instead
-#             of kexecing into it first. Needs LASERBRIDGE_RECOVERY_SSH.
+#   --resume               write to an appliance that is already running from
+#                          RAM instead of kexecing into it first
+#   --recovery-host U@H    where the RAM system answers. It usually takes a
+#                          different address than the installed system, and
+#                          laserbridge.local may be stale - naming it is the
+#                          reliable way. Same as LASERBRIDGE_RECOVERY_SSH.
 #
 # See docs/deploy.md and ADR 0005.
 set -eu
@@ -24,6 +28,7 @@ ASSUME_YES=no
 DRY_RUN=no
 VERIFY=yes
 RESUME=no
+RECOVERY_OVERRIDE=""
 
 die() { echo "deploy: $*" >&2; exit 1; }
 info() { echo "==> $*"; }
@@ -33,7 +38,7 @@ cleanup() { [ -n "$WORK" ] && [ -d "$WORK" ] && rm -rf "$WORK"; }
 trap cleanup EXIT INT TERM
 
 usage() {
-	sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+	sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
 	exit 2
 }
 
@@ -69,7 +74,7 @@ load_env() {
 	# After the kexec the target is LaserBridgeOS regardless of what ran
 	# before, so the account is laserbridge - not whatever user the installed
 	# system uses - and only the injected key can log in.
-	RECOVERY_TARGET=${LASERBRIDGE_RECOVERY_SSH:-laserbridge@${SSH_TARGET#*@}}
+	RECOVERY_TARGET=${RECOVERY_OVERRIDE:-${LASERBRIDGE_RECOVERY_SSH:-laserbridge@${SSH_TARGET#*@}}}
 	TARGET_DISK=${LASERBRIDGE_DISK:-${LIGHTBURN_DISK:-}}
 	PUBLIC_KEY=${LASERBRIDGE_PUBKEY:-}
 	[ -n "$SSH_TARGET" ] ||
@@ -78,6 +83,9 @@ load_env() {
 
 SSH_CMD="ssh"
 SSH_KEEPALIVE="-o ServerAliveInterval=5 -o ServerAliveCountMax=3"
+# Fixed by the appliance: the address it gives itself when it raises the
+# first-boot access point.
+SETUP_AP_ADDRESS=10.42.0.1
 
 set_ssh_options() {
 	# A RAM boot generates a fresh host key every time, so recovery sessions
@@ -470,9 +478,18 @@ switch_to_recovery_ssh() {
 # again.
 recovery_candidates() {
 	printf '%s\n' "$RECOVERY_TARGET"
+	# mDNS is the second guess, and a stale or wrong answer for
+	# laserbridge.local is common enough that it cannot be the only one.
 	case "$RECOVERY_TARGET" in
 		*@laserbridge.local) ;;
 		*) printf 'laserbridge@laserbridge.local\n' ;;
+	esac
+	# And the setup access point, which is where a RAM boot ends up whenever
+	# it has no credentials for any other network - the normal case for a
+	# device without a cable. Reaching it means joining LaserBridge-XXXXXX.
+	case "$RECOVERY_TARGET" in
+		*@"$SETUP_AP_ADDRESS") ;;
+		*) printf 'laserbridge@%s\n' "$SETUP_AP_ADDRESS" ;;
 	esac
 }
 
@@ -494,10 +511,13 @@ wait_for_recovery() {
 		done
 	done
 	die "the RAM system did not answer within ${waited}s at $(recovery_candidates | tr '\n' ' ').
-      It may hold a different DHCP lease, because it identifies itself as
-      \"laserbridge\" rather than as the installed system. Look for it on the
-      network and set LASERBRIDGE_RECOVERY_SSH, or power-cycle the device to
-      return to the installed system."
+      It is probably up but somewhere else. A RAM boot has an empty /data, so
+      it asks DHCP under the name \"laserbridge\" and usually gets a different
+      lease - and with no credentials for any network it raises its own access
+      point at $SETUP_AP_ADDRESS instead. Join LaserBridge-XXXXXX, or find the new
+      lease, then continue with:
+          ./deploy.sh --resume --install --recovery-host laserbridge@ADDRESS $IMAGE_DIR
+      A power cycle returns the device to its installed system."
 }
 
 confirm_install() {
@@ -613,6 +633,11 @@ while [ $# -gt 0 ]; do
 			;;
 		--yes|-y) ASSUME_YES=yes ;;
 		--resume) RESUME=yes ;;
+		--recovery-host)
+			shift
+			[ $# -gt 0 ] || die "--recovery-host needs user@host"
+			RECOVERY_OVERRIDE=$1
+			;;
 		--dry-run) DRY_RUN=yes ;;
 		--no-verify) VERIFY=no ;;
 		-h|--help) usage ;;

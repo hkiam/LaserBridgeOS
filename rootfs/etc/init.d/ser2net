@@ -14,5 +14,9 @@ error_logger="logger -t ser2net"
 
 depend() {
 	need laserbridge-init
-	after devfs mdev
+	# gensio resolves the listening address at startup, which fails while no
+	# interface has one yet. supervise-daemon retries and the bridge comes up
+	# a few seconds later, but starting after the network avoids the alarming
+	# error in the boot log and the delay that goes with it.
+	after devfs mdev networking laserbridge-network
 }
