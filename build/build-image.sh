@@ -10,14 +10,18 @@ IMAGE="$OUTPUT/$IMAGE_NAME"
 UPDATE_NAME="LaserBridgeOS-x86_64-${VERSION}.lbu"
 UPDATE="$OUTPUT/$UPDATE_NAME"
 
+# Sized to what actually goes in, with room to grow. The ESP holds two
+# kernels and two initramfs (about 60 MiB); a root slot holds the SquashFS,
+# currently 124 MiB; /data has to fit an uploaded update bundle, currently
+# 150 MiB, on its way to the inactive slot.
 ESP_START=2048
-ESP_SECTORS=262144
-ROOT_A_START=264192
-ROOT_SECTORS=524288
-ROOT_B_START=788480
-DATA_START=1312768
+ESP_SECTORS=196608
+ROOT_A_START=198656
+ROOT_SECTORS=393216
+ROOT_B_START=591872
+DATA_START=985088
 DATA_SECTORS=655360
-DISK_SECTORS=1970176
+DISK_SECTORS=1642496
 
 case "$VERSION" in
 	''|*[!A-Za-z0-9._-]*) echo "Invalid VERSION for update manifest: $VERSION" >&2; exit 1 ;;

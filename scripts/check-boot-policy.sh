@@ -35,4 +35,18 @@ grep -q 'wait_for_association' rootfs/etc/init.d/laserbridge-network ||
 grep -q 'start_access_point' rootfs/etc/init.d/laserbridge-network ||
 	fail "Wi-Fi client mode has no setup-AP recovery path"
 
+# The size of a root slot is written down twice, in two languages: the
+# partition table in the build script, and the limit the updater enforces
+# before it writes a slot. If they drift apart an update either overflows its
+# partition or is rejected for no reason.
+slot_sectors=$(sed -n 's/^ROOT_SECTORS=\([0-9]*\)$/\1/p' build/build-image.sh)
+slot_mib=$((slot_sectors / 2048))
+go_mib=$(sed -n 's/^[[:space:]]*rootSlotSize[[:space:]]*=[[:space:]]*\([0-9]*\) << 20.*/\1/p' \
+	backend/internal/update/update.go)
+[ -n "$slot_sectors" ] && [ -n "$go_mib" ] ||
+	fail "could not read the root slot size from both places"
+[ "$slot_mib" = "$go_mib" ] ||
+	fail "root slot is ${slot_mib} MiB in build-image.sh but ${go_mib} MiB in update.go"
+
 echo "Boot policy: direct, headless, parallel, recoverable"
+echo "Root slot: ${slot_mib} MiB, consistent between build and updater"

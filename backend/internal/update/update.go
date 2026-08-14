@@ -25,7 +25,9 @@ import (
 const (
 	MaxBundleSize    = 300 << 20
 	MaxSignatureSize = 128 << 10
-	rootSlotSize     = 256 << 20
+	// Must match ROOT_SECTORS in build/build-image.sh; check-boot-policy.sh
+	// asserts the two agree.
+	rootSlotSize = 192 << 20
 )
 
 var (

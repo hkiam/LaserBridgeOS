@@ -81,6 +81,12 @@ for service in modules sysctl hostname bootmisc syslog localmount laserbridge-in
 for service in networking laserbridge-network avahi-daemon sshd ser2net ustreamer laserbridge-web laserbridge-boot-confirm; do add_service default "$service"; done
 for service in mount-ro killprocs savecache; do add_service shutdown "$service"; done
 
+# Alpine ships kernel modules individually gzipped. Inside an xz SquashFS that
+# is the worse of two compressions applied to the same bytes: unpacking them
+# first and letting mksquashfs compress the lot roughly halves what they cost.
+# depmod runs afterwards so modules.dep names the files that now exist.
+find "$ROOT/lib/modules" -name '*.ko.gz' -exec gunzip -f {} +
+
 kernel_version=$(basename "$(find "$ROOT/lib/modules" -mindepth 1 -maxdepth 1 -type d | sort | tail -n 1)")
 if [ -z "$kernel_version" ]; then
 	echo "No installed kernel modules found" >&2

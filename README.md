@@ -109,7 +109,9 @@ make test
 make image
 ```
 
-The image and checksum are written to `dist/`:
+The image and checksum are written to `dist/`. It is 802 MiB raw and 303 MiB
+compressed; the section on [image size](#what-fills-the-image) explains what
+that consists of and why the raw figure is mostly empty partition.
 
 ```text
 dist/LaserBridgeOS-x86_64.img
@@ -165,6 +167,26 @@ shared default private key. On a network you do not fully trust, install a key
 and switch **SSH password authentication** off on the System page. Root SSH
 login is disabled and empty passwords are rejected regardless. See ADR 0006.
 
+### Diagnosing the appliance
+
+Once logged in, `doas` gives root without a further password, and the kernel
+log is readable:
+
+```sh
+ssh laserbridge@laserbridge.local
+dmesg | less                     # kernel log, no privileges needed
+doas rc-status                   # what OpenRC thinks is running
+doas cat /run/laserbridge/*.conf # the generated service configuration
+doas lsblk; doas blkid           # disks and filesystems
+```
+
+The appliance has no console, so this is the only way to see why something
+misbehaves — and the interfaces do not describe every failure. The trade is
+explicit: whoever can log in as `laserbridge` is root (ADR 0008). The web
+interface has no login at all, so on a local network this changes less than
+it sounds; on a network you do not control, use a key and turn password
+authentication off.
+
 ## A/B system updates
 
 `make image` also creates an update bundle for the built version. Updates are
@@ -195,6 +217,41 @@ current configuration and SSH keys under `/data` are retained. Reboot after a
 successful installation. The WebUI can stage the previous slot for the next
 boot. There is deliberately no interactive boot menu or boot delay. Offline
 recovery can select a slot by editing `boot/active-slot.cfg` on `LBBOOT`.
+
+## What fills the image
+
+An appliance this narrow producing an 800 MiB image looks wrong until you
+break it down. Most of it is partition, not content.
+
+| Partition | Size | Holds | Free |
+| --- | --- | --- | --- |
+| ESP | 96 MiB | two kernels and two initramfs, 60 MiB | 36 MiB |
+| root A | 192 MiB | the SquashFS, 124 MiB | 68 MiB |
+| root B | 192 MiB | the same, for the other slot | 68 MiB |
+| data | 320 MiB | empty at build; must fit a 150 MiB update bundle during an upload | — |
+
+The A/B design pays for its safety by storing the system twice. What is
+actually in those 124 MiB is Linux, not this project:
+
+| | Uncompressed |
+| --- | --- |
+| kernel modules | 125 MiB |
+| firmware blobs | 42 MiB |
+| userland: busybox, OpenSSH, ser2net, dnsmasq, hostapd, ustreamer, the appliance binary | 36 MiB |
+
+Two things were changed after measuring this. Alpine ships kernel modules
+individually gzipped, which inside an xz SquashFS means compressing the same
+bytes twice, badly: unpacking them first and letting `mksquashfs` do the work
+took the SquashFS from 161 MiB to 124 and the compressed image from 384 MiB
+to 303. And the partitions were cut to fit what goes in them, which took the
+raw image from 962 MiB to 802 — worth more than it sounds, because a
+permanent install writes every one of those bytes across the network.
+
+Going meaningfully below this means giving up hardware support: dropping
+`linux-firmware-intel` alone would save 25 MiB but leaves Intel Wi-Fi
+adapters without firmware, and pruning kernel modules trades size against
+running on hardware you have not tried yet. That is a decision about which
+machines the image must boot, not a build tweak.
 
 ## Remote deployment and RAM testing
 
@@ -404,6 +461,10 @@ dealt with promptly: complete setup in a physically trusted environment, and
 choose a new SSH password when the wizard offers it. The setup AP is disabled
 after successful onboarding, and the generated private SSH key is then removed
 from the appliance.
+
+SSH now leads to root: the `laserbridge` account may use `doas` without a
+password, so that a headless appliance can actually be diagnosed (ADR 0008).
+Whoever holds the SSH credential holds the machine.
 
 The WebUI has no login. Anyone who can reach port 80 can reconfigure the
 appliance, restart services, or reboot it. Two operations are exceptions
