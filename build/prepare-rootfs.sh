@@ -22,6 +22,7 @@ apk --root "$ROOT" --arch x86_64 --initdb --no-cache \
 
 rsync -a /workspace/rootfs/ "$ROOT/"
 install -D -m 0755 /workspace/laserbridge "$ROOT/usr/sbin/laserbridge"
+install -D -m 0755 /workspace/laserbridged "$ROOT/usr/sbin/laserbridged"
 install -D -m 0755 /workspace/ustreamer "$ROOT/usr/bin/ustreamer"
 mkdir -p "$ROOT/usr/share/laserbridge/web" "$ROOT/data" "$ROOT/run/laserbridge" \
 	"$ROOT/var/log" "$ROOT/var/tmp" "$ROOT/etc/runlevels/sysinit" \
@@ -78,7 +79,9 @@ add_service() {
 
 for service in devfs dmesg mdev hwdrivers; do add_service sysinit "$service"; done
 for service in modules sysctl hostname bootmisc syslog localmount laserbridge-init; do add_service boot "$service"; done
-for service in networking laserbridge-network avahi-daemon sshd ser2net ustreamer laserbridge-web laserbridge-boot-confirm; do add_service default "$service"; done
+# Both GRBL backends are enabled; each refuses to start unless the
+# configuration names it, so exactly one ends up owning the serial port.
+for service in networking laserbridge-network avahi-daemon sshd ser2net laserbridged ustreamer laserbridge-web laserbridge-boot-confirm; do add_service default "$service"; done
 for service in mount-ro killprocs savecache; do add_service shutdown "$service"; done
 
 # Alpine ships kernel modules individually gzipped. Inside an xz SquashFS that

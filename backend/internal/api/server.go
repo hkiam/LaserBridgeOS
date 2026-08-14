@@ -194,7 +194,10 @@ func ensureEOF(decoder *json.Decoder) error {
 func changedServices(a, b config.Config) []string {
 	var result []string
 	if a.GRBL != b.GRBL {
-		result = append(result, "ser2net")
+		// Both GRBL backends are told to reconsider. Whichever the
+		// configuration now names starts; the other stops, because two
+		// processes on one serial port is the failure to avoid.
+		result = append(result, "ser2net", "laserbridged")
 	}
 	if a.Camera != b.Camera {
 		result = append(result, "ustreamer")
@@ -212,8 +215,15 @@ func changedServices(a, b config.Config) []string {
 }
 
 func desiredAction(service string, cfg config.Config) string {
-	if service == "sshd" && !cfg.SSH.Enabled {
-		return "stop"
+	switch service {
+	case "sshd":
+		if !cfg.SSH.Enabled {
+			return "stop"
+		}
+	case "ser2net", "laserbridged":
+		if cfg.GRBL.Backend != service {
+			return "stop"
+		}
 	}
 	return "restart"
 }
@@ -221,7 +231,7 @@ func desiredAction(service string, cfg config.Config) string {
 func (s *Server) serviceAction(w http.ResponseWriter, r *http.Request) {
 	service := r.PathValue("service")
 	action := r.PathValue("action")
-	allowedService := map[string]bool{"ser2net": true, "ustreamer": true, "sshd": true, "avahi-daemon": true, "laserbridge-web": true}
+	allowedService := map[string]bool{"ser2net": true, "laserbridged": true, "ustreamer": true, "sshd": true, "avahi-daemon": true, "laserbridge-web": true}
 	allowedAction := map[string]bool{"start": true, "stop": true, "restart": true}
 	if !allowedService[service] || !allowedAction[action] {
 		writeError(w, http.StatusNotFound, "unknown service action")

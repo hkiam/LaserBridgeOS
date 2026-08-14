@@ -20,3 +20,9 @@ depend() {
 	# error in the boot log and the delay that goes with it.
 	after devfs mdev networking laserbridge-network
 }
+
+start_pre() {
+	# The configuration picks one GRBL backend; this is ser2net asking
+	# whether it is the one. laserbridged asks the same question.
+	/usr/sbin/laserbridge grbl-backend ser2net
+}

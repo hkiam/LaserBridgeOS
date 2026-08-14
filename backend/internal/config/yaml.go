@@ -73,6 +73,8 @@ func setValue(c *Config, section, key, raw string) error {
 		c.System.Hostname, err = stringValue()
 	case "system.setup_complete":
 		c.System.SetupComplete, err = boolValue()
+	case "grbl.backend":
+		c.GRBL.Backend, err = stringValue()
 	case "grbl.device":
 		c.GRBL.Device, err = stringValue()
 	case "grbl.baudrate":
@@ -141,8 +143,8 @@ func MarshalYAML(c Config) ([]byte, error) {
 	q := strconv.Quote
 	var b strings.Builder
 	fmt.Fprintf(&b, "system:\n  hostname: %s\n  setup_complete: %t\n", q(c.System.Hostname), c.System.SetupComplete)
-	fmt.Fprintf(&b, "grbl:\n  device: %s\n  baudrate: %d\n  port: %d\n  max_connections: %d\n  reconnect: %t\n  kick_old_user: %t\n",
-		q(c.GRBL.Device), c.GRBL.Baudrate, c.GRBL.Port, c.GRBL.MaxConnections, c.GRBL.Reconnect, c.GRBL.KickOldUser)
+	fmt.Fprintf(&b, "grbl:\n  backend: %s\n  device: %s\n  baudrate: %d\n  port: %d\n  max_connections: %d\n  reconnect: %t\n  kick_old_user: %t\n",
+		q(c.GRBL.Backend), q(c.GRBL.Device), c.GRBL.Baudrate, c.GRBL.Port, c.GRBL.MaxConnections, c.GRBL.Reconnect, c.GRBL.KickOldUser)
 	fmt.Fprintf(&b, "camera:\n  device: %s\n  format: %s\n  resolution: %s\n  fps: %d\n  port: %d\n  quality: %d\n",
 		q(c.Camera.Device), q(c.Camera.Format), q(c.Camera.Resolution), c.Camera.FPS, c.Camera.Port, c.Camera.Quality)
 	fmt.Fprintf(&b, "ssh:\n  enabled: %t\n  password_authentication: %t\n", c.SSH.Enabled, c.SSH.PasswordAuthentication)

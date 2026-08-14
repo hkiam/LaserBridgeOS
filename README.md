@@ -218,6 +218,55 @@ successful installation. The WebUI can stage the previous slot for the next
 boot. There is deliberately no interactive boot menu or boot delay. Offline
 recovery can select a slot by editing `boot/active-slot.cfg` on `LBBOOT`.
 
+## The GRBL bridge
+
+The serial connection is served by one of two backends, chosen in the
+configuration:
+
+```yaml
+grbl:
+  backend: ser2net       # or: laserbridged
+```
+
+`ser2net` is the default and has carried this job from the start.
+`laserbridged` is the appliance's own bridge, being introduced in stages: for
+now it does exactly what ser2net does — a transparent TCP-to-serial proxy —
+so LightBurn connects the same way and every byte, including the control
+characters `0x18`, `!`, `~` and `?`, crosses unchanged.
+
+Both services are installed and each refuses to start unless the
+configuration names it, so exactly one ever owns the serial port. Switching is
+a configuration change; changing it on the System page stops one and starts
+the other.
+
+What laserbridged adds today is knowing what it is doing:
+
+```console
+$ laserbridge grbl-status
+{
+  "state": "CLIENT_CONNECTED",
+  "device": "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0",
+  "tcp_port": 23,
+  "client": "192.168.178.42:53122",
+  "rx_bytes": 819233,
+  "tx_bytes": 55342
+}
+```
+
+That comes over a Unix socket at `/run/laserbridge/laserbridged.sock`, which
+is also how the web backend will ask: nothing but the daemon opens the serial
+port.
+
+Two details worth knowing. It holds the port open for its whole life rather
+than opening it per client, because opening a USB adapter toggles DTR and
+resets an Arduino-based GRBL controller — reconnecting LightBurn should not
+reset the machine. And it prefers the stable `/dev/serial/by-id/` name over
+`/dev/ttyUSB0`, which can point at different hardware after a reboot.
+
+Still to come, in this order: parsing GRBL replies, holding the machine when a
+client disappears mid-job, device hotplug, and web interface integration. See
+ADR 0009.
+
 ## What fills the image
 
 An appliance this narrow producing an 800 MiB image looks wrong until you

@@ -9,7 +9,10 @@ COPY backend/ ./
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -trimpath -buildvcs=false \
     -ldflags="-s -w -X main.version=${VERSION}" \
-    -o /laserbridge ./cmd/laserbridge
+    -o /laserbridge ./cmd/laserbridge && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -trimpath -buildvcs=false -ldflags="-s -w" \
+    -o /laserbridged ./cmd/laserbridged
 
 FROM alpine:${ALPINE_VERSION} AS ustreamer
 ARG USTREAMER_COMMIT=b5e12a841270fedea75aa03b05de8fda15a3745e
@@ -33,6 +36,7 @@ COPY build/ /workspace/build/
 COPY rootfs/ /workspace/rootfs/
 COPY web/ /workspace/web/
 COPY --from=backend /laserbridge /workspace/laserbridge
+COPY --from=backend /laserbridged /workspace/laserbridged
 COPY --from=ustreamer /src/ustreamer /workspace/ustreamer
 
 RUN chmod +x /workspace/build/*.sh /workspace/rootfs/etc/init.d/* && \

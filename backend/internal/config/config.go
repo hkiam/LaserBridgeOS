@@ -26,6 +26,12 @@ type System struct {
 }
 
 type GRBL struct {
+	// Backend selects which service owns the serial port: the long-standing
+	// ser2net, or the appliance's own laserbridged. Both are shipped while
+	// laserbridged earns its keep; exactly one runs at a time, because two
+	// processes on one serial port is the failure this bridge exists to
+	// prevent.
+	Backend        string `json:"backend"`
 	Device         string `json:"device"`
 	Baudrate       int    `json:"baudrate"`
 	Port           int    `json:"port"`
@@ -67,7 +73,8 @@ func Default() Config {
 	return Config{
 		System: System{Hostname: "laserbridge", SetupComplete: false},
 		GRBL: GRBL{
-			Device: "/dev/ttyUSB0", Baudrate: 115200, Port: 23,
+			Backend: BackendSer2net,
+			Device:  "/dev/ttyUSB0", Baudrate: 115200, Port: 23,
 			MaxConnections: 1, Reconnect: true, KickOldUser: true,
 		},
 		Camera: Camera{
@@ -83,6 +90,12 @@ func Default() Config {
 	}
 }
 
+// The GRBL backends the appliance can run.
+const (
+	BackendSer2net      = "ser2net"
+	BackendLaserbridged = "laserbridged"
+)
+
 var (
 	hostnameRE   = regexp.MustCompile(`^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
 	resolutionRE = regexp.MustCompile(`^[1-9][0-9]{1,4}x[1-9][0-9]{1,4}$`)
@@ -92,6 +105,9 @@ func (c Config) Validate() error {
 	var problems []string
 	if !hostnameRE.MatchString(c.System.Hostname) {
 		problems = append(problems, "system.hostname must be a single RFC 1123 label")
+	}
+	if c.GRBL.Backend != BackendSer2net && c.GRBL.Backend != BackendLaserbridged {
+		problems = append(problems, "grbl.backend must be ser2net or laserbridged")
 	}
 	if !validDevice(c.GRBL.Device, []string{"/dev/ttyUSB", "/dev/ttyACM", "/dev/serial/by-id/"}) {
 		problems = append(problems, "grbl.device must be a supported absolute device path")

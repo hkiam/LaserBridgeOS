@@ -53,7 +53,7 @@ func (s *Server) status(w http.ResponseWriter, _ *http.Request) {
 		hostname = cfg.System.Hostname
 	}
 	services := map[string]bool{}
-	for _, name := range []string{"ser2net", "ustreamer", "sshd", "avahi-daemon", "laserbridge-web"} {
+	for _, name := range []string{"ser2net", "laserbridged", "ustreamer", "sshd", "avahi-daemon", "laserbridge-web"} {
 		services[name] = s.serviceRunning(name)
 	}
 	// supervise-daemon reports "started" for as long as the supervisor lives,
@@ -61,7 +61,10 @@ func (s *Server) status(w http.ResponseWriter, _ *http.Request) {
 	// how a GRBL bridge that never once managed to bind its port could be
 	// reported as running. Where a service exists to answer on a port, ask
 	// the port.
+	// Whichever backend owns the GRBL port has to be listening on it to
+	// count as running, and the one that is not selected is simply off.
 	services["ser2net"] = services["ser2net"] && listening(cfg.GRBL.Port)
+	services["laserbridged"] = services["laserbridged"] && listening(cfg.GRBL.Port)
 	services["ustreamer"] = services["ustreamer"] && listening(cfg.Camera.Port)
 	version := readTrimmed(s.VersionPath)
 	if version == "" {

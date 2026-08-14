@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/laserbridgeos/laserbridgeos/backend/internal/api"
 	"github.com/laserbridgeos/laserbridgeos/backend/internal/config"
+	"github.com/laserbridgeos/laserbridgeos/backend/internal/proxy"
 	lbruntime "github.com/laserbridgeos/laserbridgeos/backend/internal/runtime"
 	lbupdate "github.com/laserbridgeos/laserbridgeos/backend/internal/update"
 )
@@ -35,7 +37,7 @@ func run(args []string) error {
 	runner := lbruntime.ExecRunner{}
 	manager := &lbruntime.Manager{Store: store, Dir: runtimeDir, DataDir: dataDir, Run: runner}
 	if len(args) == 0 {
-		return errors.New("usage: laserbridge <serve|init|apply|run-ustreamer|ssh-enabled|boot-confirm>")
+		return errors.New("usage: laserbridge <serve|init|apply|run-ustreamer|ssh-enabled|boot-confirm|grbl-backend|grbl-status>")
 	}
 	switch args[0] {
 	case "init":
@@ -46,6 +48,35 @@ func run(args []string) error {
 		return manager.RunUstreamer()
 	case "boot-confirm":
 		return newUpdater(manager).ConfirmBoot()
+	case "grbl-status":
+		// Reads the bridge's own account of itself over its Unix socket.
+		// Nothing else may touch the serial port, so this is how the rest of
+		// the appliance finds out what the bridge is doing.
+		status, err := proxy.ReadStatus(getenv("LASERBRIDGE_BRIDGE_SOCKET", "/run/laserbridge/laserbridged.sock"))
+		if err != nil {
+			return err
+		}
+		encoded, err := json.MarshalIndent(status, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(encoded))
+		return nil
+	case "grbl-backend":
+		// Both GRBL backends sit in the default runlevel; each asks this
+		// whether it is the one that should run. Exactly one may own the
+		// serial port, and the configuration decides which.
+		if len(args) < 2 {
+			return errors.New("usage: laserbridge grbl-backend <ser2net|laserbridged>")
+		}
+		cfg, err := store.Load()
+		if err != nil {
+			return err
+		}
+		if cfg.GRBL.Backend != args[1] {
+			return fmt.Errorf("GRBL backend is %q, not %q", cfg.GRBL.Backend, args[1])
+		}
+		return nil
 	case "ssh-enabled":
 		cfg, err := store.Load()
 		if err != nil {
