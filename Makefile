@@ -21,7 +21,7 @@ test:
 
 check:
 	docker run --rm --user $(HOST_UID):$(HOST_GID) -e GOCACHE=/tmp/go-cache -v $(ROOT_DIR):/src -w /src/backend golang:1.23-alpine go vet ./...
-	sh -n deploy.sh build/build-image.sh build/prepare-rootfs.sh scripts/*.sh rootfs/etc/init.d/* rootfs/usr/sbin/laserbridge-deploy
+	sh scripts/shell-files.sh | xargs -n1 sh -n
 	sh scripts/check-boot-policy.sh
 	sh scripts/check-web-ui.sh
 
@@ -29,7 +29,7 @@ fmt:
 	docker run --rm --user $(HOST_UID):$(HOST_GID) -e GOCACHE=/tmp/go-cache -v $(ROOT_DIR):/src -w /src/backend golang:1.23-alpine gofmt -w .
 
 shellcheck:
-	docker run --rm -v $(ROOT_DIR):/mnt koalaman/shellcheck:stable deploy.sh build/build-image.sh build/prepare-rootfs.sh scripts/*.sh rootfs/etc/init.d/* rootfs/usr/sbin/laserbridge-deploy rootfs/etc/laserbridge/ramboot-init
+	docker run --rm -v $(ROOT_DIR):/mnt koalaman/shellcheck:stable $$(sh scripts/shell-files.sh)
 
 run:
 	mkdir -p .local-data .local-run
