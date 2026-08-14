@@ -99,7 +99,17 @@ that prompt.
 
 Boots only the RAM recovery system: network, SSH, and `dd`, `zstd`, `lsblk`,
 `blkid`, `mount`, `sha256sum`, `kexec`. The appliance services stay stopped.
-Use it for manual repair, backup and restore.
+
+In this mode the `laserbridge` account has **full root through `doas`**, not
+just the deployment helper. Repairing a machine by hand means mounting
+filesystems, writing block devices and reconfiguring interfaces, none of which
+the appliance's narrow rule allows; without this the tools would be installed
+but unusable. The rule is written into the RAM overlay while the session
+starts and disappears with it, and the session is only reachable by whoever
+holds the deployment key or the access point password.
+
+On an installed appliance nothing changes: root login stays disabled and
+`doas` still grants exactly one program (ADR 0005).
 
 ### `--status`, `--check`, `--dry-run`
 

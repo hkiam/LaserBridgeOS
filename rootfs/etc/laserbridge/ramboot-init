@@ -54,6 +54,17 @@ laserbridge_ramboot() {
 			"$sysroot/etc/runlevels/default/ustreamer" \
 			"$sysroot/etc/runlevels/default/laserbridge-web"
 		: > "$sysroot/etc/laserbridge/recovery"
+
+		# Recovery exists so the operator can repair the appliance by hand:
+		# mount a filesystem, run dd, take a backup, put the machine on a
+		# different network. The doas rule that is right for an installed
+		# appliance grants one program and makes all of that impossible - the
+		# tools are present but unusable. This session lives only in RAM, has
+		# no persistent state, and is reachable only by someone who already
+		# holds the deployment key, so it grants root outright. The rule is
+		# written into the overlay and disappears with the session.
+		printf '%s\n' 'permit nopass laserbridge as root' > "$sysroot/etc/doas.conf"
+		chmod 0600 "$sysroot/etc/doas.conf"
 	fi
 
 	# deploy.sh injects the operator's public key, because a RAM boot starts
