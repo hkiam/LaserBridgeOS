@@ -539,11 +539,32 @@ EOF
 }
 
 write_disk_image() {
-	info "Streaming $(basename "$DISK_IMAGE") to $CHOSEN_DISK"
-	# Decompressed on this machine and piped straight onto the disk, so the
-	# target never has to store the image anywhere.
-	gzip -dc "$DISK_IMAGE" | remote_stdin write-disk "$CHOSEN_DISK" ||
-		die "writing the disk image failed; NOT rebooting"
+	# Send the image compressed and unpack it on the target: 962 MiB of image
+	# travel as roughly 400. That matters most exactly when it hurts most -
+	# over the appliance's own setup access point, which runs 802.11g and
+	# manages a few hundred KiB/s.
+	#
+	# The decompressor runs before the privilege boundary, as the login user,
+	# so it cannot be used where sudo expects the password as the first line
+	# of stdin - it would swallow it. That case keeps unpacking locally.
+	# A bulk write needs a far longer grace period than the 15 seconds that
+	# make a kexec's vanished connection obvious: a saturated 802.11g link
+	# stalls for a while under load without being dead.
+	saved_ssh_opts=$SSH_OPTS
+	SSH_OPTS=$(printf '%s' "$saved_ssh_opts" |
+		sed 's/ServerAliveInterval=5 -o ServerAliveCountMax=3/ServerAliveInterval=15 -o ServerAliveCountMax=8/')
+	if [ "$PRIVILEGE" = "sudo-password" ]; then
+		info "Streaming $(basename "$DISK_IMAGE") to $CHOSEN_DISK (uncompressed on the wire)"
+		gzip -dc "$DISK_IMAGE" | remote_stdin write-disk "$CHOSEN_DISK" ||
+			die "writing the disk image failed; NOT rebooting"
+	else
+		info "Streaming $(basename "$DISK_IMAGE") to $CHOSEN_DISK (compressed on the wire)"
+		# shellcheck disable=SC2029 # the helper path expands here on purpose
+		target_ssh_stdin "gunzip -c | $PRIVILEGE $HELPER write-disk $CHOSEN_DISK" \
+			< "$DISK_IMAGE" ||
+			die "writing the disk image failed; NOT rebooting"
+	fi
+	SSH_OPTS=$saved_ssh_opts
 	info "Write finished and synced"
 
 	if [ "$VERIFY" = "yes" ]; then
