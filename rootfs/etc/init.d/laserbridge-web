@@ -1,0 +1,17 @@
+#!/sbin/openrc-run
+# shellcheck shell=sh
+# shellcheck disable=SC2034
+
+description="LaserBridgeOS configuration API and WebUI"
+command="/usr/sbin/laserbridge"
+command_args="serve --listen :80 --web-root /usr/share/laserbridge/web"
+command_user="root:root"
+supervisor="supervise-daemon"
+respawn_delay=3
+respawn_max=0
+output_logger="logger -t laserbridge-web"
+error_logger="logger -t laserbridge-web"
+
+depend() {
+	need laserbridge-init
+}

@@ -1,0 +1,8 @@
+auto lo
+iface lo inet loopback
+
+auto eth0
+allow-hotplug eth0
+iface eth0 inet dhcp
+  hostname laserbridge
+  udhcpc_opts -t 1 -T 1 -A 0

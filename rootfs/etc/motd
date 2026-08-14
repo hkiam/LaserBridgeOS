@@ -1,0 +1,3 @@
+LaserBridgeOS appliance
+
+The root filesystem is immutable. Store persistent state only under /data.

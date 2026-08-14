@@ -1,0 +1,9 @@
+# LaserBridgeOS is a headless appliance. Management starts through WebUI and
+# SSH; local root login is locked, so virtual-console gettys add no recovery
+# path and are intentionally not spawned.
+::sysinit:/sbin/openrc -q sysinit
+::sysinit:/sbin/openrc -q boot
+::wait:/sbin/openrc -q default
+
+::ctrlaltdel:/sbin/reboot
+::shutdown:/sbin/openrc -q shutdown

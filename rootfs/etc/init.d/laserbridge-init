@@ -1,0 +1,20 @@
+#!/sbin/openrc-run
+# shellcheck shell=sh
+# shellcheck disable=SC2034
+
+description="Initialize LaserBridgeOS volatile and persistent state"
+
+depend() {
+	need localmount
+	before networking laserbridge-network sshd avahi-daemon ser2net ustreamer laserbridge-web
+}
+
+start() {
+	ebegin "Preparing LaserBridgeOS state"
+	mkdir -p /run/laserbridge /run/lock /data/ssh /data/setup /data/home/laserbridge
+	chmod 0755 /run/laserbridge /run/lock
+	touch /run/resolv.conf
+	/usr/sbin/laserbridge init || return 1
+	chown -R laserbridge:laserbridge /data/home/laserbridge
+	eend $?
+}

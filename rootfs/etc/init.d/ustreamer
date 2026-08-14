@@ -1,0 +1,18 @@
+#!/sbin/openrc-run
+# shellcheck shell=sh
+# shellcheck disable=SC2034
+
+description="LaserBridgeOS USB camera MJPEG stream"
+command="/usr/sbin/laserbridge"
+command_args="run-ustreamer"
+command_user="root:root"
+supervisor="supervise-daemon"
+respawn_delay=5
+respawn_max=0
+output_logger="logger -t ustreamer"
+error_logger="logger -t ustreamer"
+
+depend() {
+	need laserbridge-init
+	after devfs mdev
+}

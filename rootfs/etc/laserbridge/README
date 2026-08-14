@@ -1,0 +1,2 @@
+config.yaml is a symlink to /data/config.yaml and is created by the image build.
+Runtime-generated service configuration is under /run/laserbridge.

@@ -1,0 +1,126 @@
+package main
+
+import (
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
+	"time"
+
+	"github.com/laserbridgeos/laserbridgeos/backend/internal/api"
+	"github.com/laserbridgeos/laserbridgeos/backend/internal/config"
+	lbruntime "github.com/laserbridgeos/laserbridgeos/backend/internal/runtime"
+	lbupdate "github.com/laserbridgeos/laserbridgeos/backend/internal/update"
+)
+
+var version = "development"
+
+func main() {
+	if err := run(os.Args[1:]); err != nil {
+		log.Printf("laserbridge: %v", err)
+		os.Exit(1)
+	}
+}
+
+func run(args []string) error {
+	dataDir := getenv("LASERBRIDGE_DATA", "/data")
+	configPath := getenv("LASERBRIDGE_CONFIG", filepath.Join(dataDir, "config.yaml"))
+	runtimeDir := getenv("LASERBRIDGE_RUNTIME", "/run/laserbridge")
+	store := config.NewStore(configPath)
+	runner := lbruntime.ExecRunner{}
+	manager := &lbruntime.Manager{Store: store, Dir: runtimeDir, DataDir: dataDir, Run: runner}
+	if len(args) == 0 {
+		return errors.New("usage: laserbridge <serve|init|apply|run-ustreamer|ssh-enabled>")
+	}
+	switch args[0] {
+	case "init":
+		return manager.InitData()
+	case "apply":
+		return manager.Apply()
+	case "run-ustreamer":
+		return manager.RunUstreamer()
+	case "ssh-enabled":
+		cfg, err := store.Load()
+		if err != nil {
+			return err
+		}
+		if !cfg.SSH.Enabled {
+			return errors.New("SSH is disabled in appliance configuration")
+		}
+		return nil
+	case "serve":
+		listen := ":80"
+		webRoot := "/usr/share/laserbridge/web"
+		for i := 1; i < len(args); i++ {
+			switch args[i] {
+			case "--listen":
+				i++
+				if i >= len(args) {
+					return errors.New("--listen needs a value")
+				}
+				listen = args[i]
+			case "--web-root":
+				i++
+				if i >= len(args) {
+					return errors.New("--web-root needs a value")
+				}
+				webRoot = args[i]
+			default:
+				return fmt.Errorf("unknown argument %q", args[i])
+			}
+		}
+		if err := store.Ensure(); err != nil {
+			return err
+		}
+		if os.Geteuid() != 0 {
+			manager.Run = nil
+			runnerForAPI := lbruntime.Runner(nil)
+			return serve(listen, webRoot, store, manager, runnerForAPI)
+		}
+		return serve(listen, webRoot, store, manager, runner)
+	default:
+		return fmt.Errorf("unknown command %q", args[0])
+	}
+}
+
+func serve(listen, webRoot string, store *config.Store, manager *lbruntime.Manager, runner lbruntime.Runner) error {
+	logger := log.New(os.Stdout, "laserbridge-web: ", log.LstdFlags)
+	versionPath := getenv("LASERBRIDGE_VERSION_FILE", "/etc/laserbridge/version")
+	updater := &lbupdate.Manager{DataDir: manager.DataDir, RuntimeDir: manager.Dir, VersionPath: versionPath}
+	server := &http.Server{
+		Addr:              listen,
+		Handler:           (&api.Server{Store: store, Runtime: manager, Runner: runner, Updater: updater, WebRoot: filepath.Clean(webRoot), VersionPath: versionPath, Logger: logger}).Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Minute,
+		WriteTimeout:      10 * time.Minute,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    16 << 10,
+	}
+	errorsCh := make(chan error, 1)
+	go func() {
+		logger.Printf("version %s listening on %s", version, listen)
+		errorsCh <- server.ListenAndServe()
+	}()
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	select {
+	case <-signals:
+		return server.Close()
+	case err := <-errorsCh:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	}
+}
+
+func getenv(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
+}

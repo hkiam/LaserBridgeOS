@@ -1,0 +1,18 @@
+#!/sbin/openrc-run
+# shellcheck shell=sh
+# shellcheck disable=SC2034
+
+description="LaserBridgeOS GRBL serial to raw TCP bridge"
+command="/usr/sbin/ser2net"
+command_args="-n -c /run/laserbridge/ser2net.yaml"
+command_user="root:root"
+supervisor="supervise-daemon"
+respawn_delay=3
+respawn_max=0
+output_logger="logger -t ser2net"
+error_logger="logger -t ser2net"
+
+depend() {
+	need laserbridge-init
+	after devfs mdev
+}

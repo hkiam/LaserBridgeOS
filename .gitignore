@@ -1,0 +1,4 @@
+/dist/
+/.local-data/
+/.local-run/
+.DS_Store

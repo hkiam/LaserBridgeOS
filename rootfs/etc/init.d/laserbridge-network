@@ -1,0 +1,73 @@
+#!/sbin/openrc-run
+# shellcheck shell=sh
+# shellcheck disable=SC2034
+
+description="LaserBridgeOS Wi-Fi setup AP and client manager"
+
+depend() {
+	need laserbridge-init
+}
+
+wireless_interface() {
+	for candidate in /sys/class/net/*; do
+		if [ -d "$candidate/wireless" ]; then
+			basename "$candidate"
+			return 0
+		fi
+	done
+	return 1
+}
+
+stop_process() {
+	pidfile=$1
+	if [ -s "$pidfile" ]; then
+		start-stop-daemon --stop --pidfile "$pidfile" --retry TERM/3/KILL/2 >/dev/null 2>&1 || true
+		rm -f "$pidfile"
+	fi
+}
+
+stop() {
+	ebegin "Stopping LaserBridgeOS Wi-Fi"
+	stop_process /run/laserbridge/udhcpc-wlan.pid
+	stop_process /run/laserbridge/wpa_supplicant.pid
+	stop_process /run/laserbridge/dnsmasq.pid
+	stop_process /run/laserbridge/hostapd.pid
+	eend 0
+}
+
+start() {
+	mode=$(tr -d '\r\n' </run/laserbridge/network-mode 2>/dev/null || printf ethernet)
+	interface=$(wireless_interface || true)
+	if [ -z "$interface" ]; then
+		einfo "No Wi-Fi interface found; Ethernet remains available"
+		return 0
+	fi
+
+	stop_process /run/laserbridge/udhcpc-wlan.pid
+	stop_process /run/laserbridge/wpa_supplicant.pid
+	stop_process /run/laserbridge/dnsmasq.pid
+	stop_process /run/laserbridge/hostapd.pid
+	ip link set "$interface" down
+	ip address flush dev "$interface" || true
+	ip link set "$interface" up
+
+	case "$mode" in
+		ap)
+			ebegin "Starting setup AP on $interface"
+			ip address add 10.42.0.1/24 dev "$interface"
+			hostapd -B -P /run/laserbridge/hostapd.pid -i "$interface" /run/laserbridge/hostapd.conf || return 1
+			dnsmasq --conf-file=/run/laserbridge/dnsmasq.conf --interface="$interface" --pid-file=/run/laserbridge/dnsmasq.pid || return 1
+			eend 0
+			;;
+		client)
+			ebegin "Connecting $interface to configured Wi-Fi"
+			mkdir -p /run/wpa_supplicant
+			wpa_supplicant -B -P /run/laserbridge/wpa_supplicant.pid -i "$interface" -c /run/laserbridge/wpa_supplicant.conf || return 1
+			udhcpc -b -t 1 -T 1 -A 0 -p /run/laserbridge/udhcpc-wlan.pid -i "$interface" -x "hostname:$(hostname)" || return 1
+			eend 0
+			;;
+		*)
+			einfo "Wi-Fi is disabled"
+			;;
+	esac
+}

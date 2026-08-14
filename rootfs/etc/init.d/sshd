@@ -1,0 +1,21 @@
+#!/sbin/openrc-run
+# shellcheck shell=sh
+# shellcheck disable=SC2034
+
+description="OpenSSH server for LaserBridgeOS"
+command="/usr/sbin/sshd"
+command_args="-D -e -f /run/laserbridge/sshd_config"
+supervisor="supervise-daemon"
+respawn_delay=3
+respawn_max=0
+output_logger="logger -t sshd"
+error_logger="logger -t sshd"
+
+depend() {
+	need laserbridge-init
+	use logger
+}
+
+start_pre() {
+	/usr/sbin/laserbridge ssh-enabled
+}
