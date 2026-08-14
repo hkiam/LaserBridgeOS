@@ -9,13 +9,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/laserbridgeos/laserbridgeos/backend/internal/atomicfile"
 )
 
 const (
@@ -49,13 +53,16 @@ type State struct {
 }
 
 type Status struct {
-	CurrentSlot      string `json:"current_slot"`
-	PreviousSlot     string `json:"previous_slot"`
-	CurrentVersion   string `json:"current_version"`
-	StagedVersion    string `json:"staged_version,omitempty"`
-	StagedSlot       string `json:"staged_slot,omitempty"`
-	RebootRequired   bool   `json:"reboot_required"`
-	SignedByOwnerKey bool   `json:"signed_updates_required"`
+	CurrentSlot    string `json:"current_slot"`
+	PreviousSlot   string `json:"previous_slot"`
+	CurrentVersion string `json:"current_version"`
+	StagedVersion  string `json:"staged_version,omitempty"`
+	StagedSlot     string `json:"staged_slot,omitempty"`
+	RebootRequired bool   `json:"reboot_required"`
+	// SignedUpdatesRequired is constant: the appliance has no unsigned
+	// install path. It is reported so the web interface can state the
+	// requirement instead of hard-coding it.
+	SignedUpdatesRequired bool `json:"signed_updates_required"`
 }
 
 type SignatureVerifier interface {
@@ -90,7 +97,7 @@ func (OpenSSHVerifier) Verify(bundlePath, signaturePath, authorizedKeysPath, wor
 		return errors.New("no plain SSH public key is available to authorize updates")
 	}
 	allowedPath := filepath.Join(workDir, "update_allowed_signers")
-	if err := atomicWrite(allowedPath, []byte(allowed.String()), 0600); err != nil {
+	if err := atomicfile.Write(allowedPath, []byte(allowed.String()), 0600); err != nil {
 		return err
 	}
 	bundle, err := os.Open(bundlePath)
@@ -182,11 +189,11 @@ func (m *Manager) Install(bundlePath, signaturePath string) (State, error) {
 	if err := os.MkdirAll(filepath.Join(m.dataDir(), "update"), 0700); err != nil {
 		return State{}, err
 	}
-	if err := atomicWrite(filepath.Join(m.dataDir(), "update", "state.json"), append(stateData, '\n'), 0600); err != nil {
+	if err := atomicfile.Write(filepath.Join(m.dataDir(), "update", "state.json"), append(stateData, '\n'), 0600); err != nil {
 		return State{}, err
 	}
 	// This is the commit point. Root and boot payloads are fully synced first.
-	if err := atomicWrite(filepath.Join(bootDir, "boot", "active-slot.cfg"), []byte("set laserbridge_slot="+target+"\n"), 0644); err != nil {
+	if err := atomicfile.Write(filepath.Join(bootDir, "boot", "active-slot.cfg"), []byte("set laserbridge_slot="+target+"\n"), 0644); err != nil {
 		return State{}, fmt.Errorf("activate slot %s: %w", target, err)
 	}
 	return state, nil
@@ -205,7 +212,7 @@ func withinSize(path string, limit int64, label string) error {
 
 func (m *Manager) Status() Status {
 	current := m.CurrentSlot()
-	status := Status{CurrentSlot: current, PreviousSlot: otherSlot(current), CurrentVersion: readTrimmed(m.versionPath()), SignedByOwnerKey: true}
+	status := Status{CurrentSlot: current, PreviousSlot: otherSlot(current), CurrentVersion: readTrimmed(m.versionPath()), SignedUpdatesRequired: true}
 	data, err := os.ReadFile(filepath.Join(m.dataDir(), "update", "state.json"))
 	if err == nil {
 		var state State
@@ -236,13 +243,78 @@ func (m *Manager) StageRollback() (string, error) {
 	}
 	state := State{Version: "previous-slot", TargetSlot: target, SourceSlot: m.CurrentSlot(), InstalledAt: now.Format(time.RFC3339)}
 	stateData, _ := json.Marshal(state)
-	if err := atomicWrite(filepath.Join(m.dataDir(), "update", "state.json"), append(stateData, '\n'), 0600); err != nil {
+	if err := atomicfile.Write(filepath.Join(m.dataDir(), "update", "state.json"), append(stateData, '\n'), 0600); err != nil {
 		return "", err
 	}
-	if err := atomicWrite(filepath.Join(bootDir, "boot", "active-slot.cfg"), []byte("set laserbridge_slot="+target+"\n"), 0644); err != nil {
+	if err := atomicfile.Write(filepath.Join(bootDir, "boot", "active-slot.cfg"), []byte("set laserbridge_slot="+target+"\n"), 0644); err != nil {
 		return "", err
 	}
 	return target, nil
+}
+
+// ConfirmBoot records that the running slot reached a fully started system.
+//
+// GRUB raises a boot-attempt counter before handing over to the kernel and
+// switches to the other slot once it has counted three attempts that were
+// never confirmed. Resetting the counter here closes that loop: an update
+// that panics, loses its initramfs, or never brings up the services is undone
+// by the bootloader without anyone having to attach a console to a headless
+// appliance.
+//
+// When GRUB has already fallen back, the running slot differs from the one
+// recorded in active-slot.cfg. That slot has now proven itself, so it becomes
+// the recorded one and the staged update that failed to boot is dropped
+// instead of asking for yet another reboot into it.
+func (m *Manager) ConfirmBoot() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	current := m.CurrentSlot()
+	bootDir, _, _, cleanup, err := m.resolveTargets()
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	environment := map[string]string{"laserbridge_try": "0", "laserbridge_override": ""}
+	if err := writeGrubEnvironment(filepath.Join(bootDir, "boot", "grubenv"), environment); err != nil {
+		return fmt.Errorf("reset boot counter: %w", err)
+	}
+	activePath := filepath.Join(bootDir, "boot", "active-slot.cfg")
+	if readTrimmed(activePath) == "set laserbridge_slot="+current {
+		return nil
+	}
+	if err := atomicfile.Write(activePath, []byte("set laserbridge_slot="+current+"\n"), 0644); err != nil {
+		return fmt.Errorf("record recovered slot %s: %w", current, err)
+	}
+	if err := os.Remove(filepath.Join(m.dataDir(), "update", "state.json")); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+const grubEnvironmentSize = 1024
+
+// writeGrubEnvironment writes a GRUB environment block: a fixed 1024-byte
+// file holding a header, one key=value line per variable, and '#' padding.
+// GRUB rewrites this file in place from the bootloader, so the size is part
+// of the format and must not change.
+func writeGrubEnvironment(path string, values map[string]string) error {
+	var content strings.Builder
+	content.WriteString("# GRUB Environment Block\n")
+	content.WriteString("# WARNING: Do not edit this file by tools other than grub-editenv!!!\n")
+	for _, name := range slices.Sorted(maps.Keys(values)) {
+		if strings.ContainsAny(name, "\n=") || strings.Contains(values[name], "\n") {
+			return fmt.Errorf("invalid GRUB environment entry %q", name)
+		}
+		content.WriteString(name + "=" + values[name] + "\n")
+	}
+	if content.Len() > grubEnvironmentSize {
+		return errors.New("GRUB environment block is too large")
+	}
+	block := make([]byte, grubEnvironmentSize)
+	for i := copy(block, content.String()); i < len(block); i++ {
+		block[i] = '#'
+	}
+	return atomicfile.Write(path, block, 0644)
 }
 
 func (m *Manager) CurrentSlot() string {
@@ -455,37 +527,6 @@ func otherSlot(slot string) string {
 		return "a"
 	}
 	return "b"
-}
-
-func atomicWrite(path string, data []byte, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return err
-	}
-	temporary := path + ".tmp"
-	file, err := os.OpenFile(temporary, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
-	if err != nil {
-		return err
-	}
-	if _, err := file.Write(data); err != nil {
-		file.Close()
-		return err
-	}
-	if err := file.Sync(); err != nil {
-		file.Close()
-		return err
-	}
-	if err := file.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(temporary, path); err != nil {
-		return err
-	}
-	directory, err := os.Open(filepath.Dir(path))
-	if err == nil {
-		_ = directory.Sync()
-		_ = directory.Close()
-	}
-	return nil
 }
 
 func readTrimmed(path string) string {

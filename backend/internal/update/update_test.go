@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -162,6 +163,81 @@ func TestSignatureFailureHappensBeforeBundleInstall(t *testing.T) {
 	data, _ := os.ReadFile(rootB)
 	if string(data) != "old-root-b" {
 		t.Fatalf("inactive slot changed to %q", data)
+	}
+}
+
+func grubEnvironment(t *testing.T, manager *Manager) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(manager.BootDir, "boot", "grubenv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) != grubEnvironmentSize {
+		t.Fatalf("grubenv is %d bytes, want %d; GRUB rewrites it in place", len(data), grubEnvironmentSize)
+	}
+	return string(data)
+}
+
+func TestConfirmBootResetsCounterAndKeepsStagedUpdate(t *testing.T) {
+	manager, _, _, _ := testManager(t, &fakeVerifier{})
+	activePath := filepath.Join(manager.BootDir, "boot", "active-slot.cfg")
+	if err := os.WriteFile(activePath, []byte("set laserbridge_slot=a\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(manager.DataDir, "update", "state.json")
+	if err := os.MkdirAll(filepath.Dir(statePath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Staged for the other slot: the pending update has simply not been
+	// rebooted into yet and must survive an ordinary healthy boot.
+	if err := os.WriteFile(statePath, []byte(`{"version":"0.2.0","target_slot":"b"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ConfirmBoot(); err != nil {
+		t.Fatal(err)
+	}
+	environment := grubEnvironment(t, manager)
+	for _, expected := range []string{"# GRUB Environment Block\n", "laserbridge_try=0\n", "laserbridge_override=\n"} {
+		if !strings.Contains(environment, expected) {
+			t.Fatalf("grubenv lacks %q:\n%s", expected, environment)
+		}
+	}
+	active, _ := os.ReadFile(activePath)
+	if string(active) != "set laserbridge_slot=a\n" {
+		t.Fatalf("active slot changed to %q", active)
+	}
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("staged update was dropped on a healthy boot: %v", err)
+	}
+}
+
+func TestConfirmBootAdoptsSlotAfterGrubFellBack(t *testing.T) {
+	manager, _, _, _ := testManager(t, &fakeVerifier{})
+	// An update was staged into slot B and activated, but B never booted, so
+	// GRUB fell back to A - which is the slot now running per CmdlinePath.
+	activePath := filepath.Join(manager.BootDir, "boot", "active-slot.cfg")
+	if err := os.WriteFile(activePath, []byte("set laserbridge_slot=b\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(manager.DataDir, "update", "state.json")
+	if err := os.MkdirAll(filepath.Dir(statePath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, []byte(`{"version":"0.2.0","target_slot":"b"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ConfirmBoot(); err != nil {
+		t.Fatal(err)
+	}
+	active, _ := os.ReadFile(activePath)
+	if string(active) != "set laserbridge_slot=a\n" {
+		t.Fatalf("active slot = %q, want the recovered slot a", active)
+	}
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Fatalf("update that failed to boot is still staged: %v", err)
+	}
+	if status := manager.Status(); status.RebootRequired {
+		t.Fatalf("status still asks for a reboot into the broken slot: %#v", status)
 	}
 }
 

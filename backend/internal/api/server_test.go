@@ -30,7 +30,7 @@ func testServer(t *testing.T) (http.Handler, *config.Store, *fakeRunner) {
 	t.Helper()
 	dir := t.TempDir()
 	store := config.NewStore(filepath.Join(dir, "config.yaml"))
-	if err := store.Ensure(); err != nil {
+	if _, err := store.Ensure(); err != nil {
 		t.Fatal(err)
 	}
 	runner := &fakeRunner{}

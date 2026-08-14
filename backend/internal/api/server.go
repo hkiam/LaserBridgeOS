@@ -204,9 +204,9 @@ func changedServices(a, b config.Config) []string {
 	if a.System != b.System {
 		result = append(result, "avahi-daemon")
 	}
-	if a.WiFi != b.WiFi {
-		result = append(result, "laserbridge-network")
-	}
+	// Wi-Fi is deliberately absent: putConfig carries the previous Wi-Fi
+	// settings over unchanged, so only PUT /api/wifi can alter them and that
+	// handler restarts the network itself.
 	return result
 }
 

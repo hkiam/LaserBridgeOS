@@ -69,8 +69,6 @@ the user downloads or builds a bundle, signs it, and uploads bundle plus
 signature through the WebUI. Automatic release discovery and unattended fleet
 rollouts remain out of scope.
 
-There is no automatic boot-success rollback in this iteration. If a validly
-signed release boots badly, the previous slot can be selected through the UI
-while it remains reachable or by editing `active-slot.cfg` from another
-machine. Adding a boot-attempt counter later does not require another
-partition-layout change.
+This iteration had no automatic boot-success rollback; the boot-attempt
+counter that supersedes that limitation is described in ADR 0004 and required
+no partition-layout change, as anticipated here.

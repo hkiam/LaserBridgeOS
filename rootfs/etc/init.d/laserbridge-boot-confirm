@@ -1,0 +1,16 @@
+#!/sbin/openrc-run
+# shellcheck shell=sh
+# shellcheck disable=SC2034
+
+description="Confirm a healthy boot so GRUB keeps the running system slot"
+
+depend() {
+	need laserbridge-init
+	after laserbridge-web laserbridge-network ser2net ustreamer
+}
+
+start() {
+	ebegin "Confirming healthy boot"
+	/usr/sbin/laserbridge boot-confirm
+	eend $? "Boot counter not reset; GRUB may fall back to the other slot"
+}

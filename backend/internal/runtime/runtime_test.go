@@ -22,7 +22,7 @@ func (r *recordRunner) Run(name string, args ...string) ([]byte, error) {
 func TestApplyGeneratesRuntimeConfiguration(t *testing.T) {
 	dir := t.TempDir()
 	store := config.NewStore(filepath.Join(dir, "data", "config.yaml"))
-	if err := store.Ensure(); err != nil {
+	if _, err := store.Ensure(); err != nil {
 		t.Fatal(err)
 	}
 	runner := &recordRunner{}

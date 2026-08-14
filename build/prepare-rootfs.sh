@@ -53,7 +53,7 @@ add_service() {
 
 for service in devfs dmesg mdev hwdrivers; do add_service sysinit "$service"; done
 for service in modules sysctl hostname bootmisc syslog localmount laserbridge-init; do add_service boot "$service"; done
-for service in networking laserbridge-network avahi-daemon sshd ser2net ustreamer laserbridge-web; do add_service default "$service"; done
+for service in networking laserbridge-network avahi-daemon sshd ser2net ustreamer laserbridge-web laserbridge-boot-confirm; do add_service default "$service"; done
 for service in mount-ro killprocs savecache; do add_service shutdown "$service"; done
 
 kernel_version=$(basename "$(find "$ROOT/lib/modules" -mindepth 1 -maxdepth 1 -type d | sort | tail -n 1)")

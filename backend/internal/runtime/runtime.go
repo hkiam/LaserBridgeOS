@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/laserbridgeos/laserbridgeos/backend/internal/atomicfile"
 	"github.com/laserbridgeos/laserbridgeos/backend/internal/config"
 )
 
@@ -54,7 +55,7 @@ func (m *Manager) Apply() error {
 	}
 	ser2net := fmt.Sprintf("connection: &grbl\n  accepter: tcp,%d\n  connector: serialdev,%s,%dn81,local\n  options:\n    max-connections: %d\n    kickolduser: %t\n",
 		cfg.GRBL.Port, cfg.GRBL.Device, cfg.GRBL.Baudrate, cfg.GRBL.MaxConnections, cfg.GRBL.KickOldUser)
-	if err := atomicWrite(filepath.Join(m.Dir, "ser2net.yaml"), []byte(ser2net), 0644); err != nil {
+	if err := atomicfile.Write(filepath.Join(m.Dir, "ser2net.yaml"), []byte(ser2net), 0644); err != nil {
 		return err
 	}
 	passwordAuth := "no"
@@ -74,7 +75,7 @@ AllowUsers laserbridge
 PidFile /run/sshd.pid
 Subsystem sftp internal-sftp
 `, passwordAuth)
-	if err := atomicWrite(filepath.Join(m.Dir, "sshd_config"), []byte(sshd), 0600); err != nil {
+	if err := atomicfile.Write(filepath.Join(m.Dir, "sshd_config"), []byte(sshd), 0600); err != nil {
 		return err
 	}
 	mode := "ethernet"
@@ -83,7 +84,7 @@ Subsystem sftp internal-sftp
 	} else if cfg.WiFi.Enabled {
 		mode = "client"
 	}
-	if err := atomicWrite(filepath.Join(m.Dir, "network-mode"), []byte(mode+"\n"), 0644); err != nil {
+	if err := atomicfile.Write(filepath.Join(m.Dir, "network-mode"), []byte(mode+"\n"), 0644); err != nil {
 		return err
 	}
 	apSSID := strings.TrimSpace(readFile(m.DataPath("setup", "ap_ssid")))
@@ -92,16 +93,16 @@ Subsystem sftp internal-sftp
 	}
 	hostapd := fmt.Sprintf("country_code=%s\ndriver=nl80211\nssid=%s\nhw_mode=g\nchannel=6\nwmm_enabled=1\nauth_algs=1\nwpa=2\nwpa_passphrase=%s\nwpa_key_mgmt=WPA-PSK\nrsn_pairwise=CCMP\n",
 		cfg.WiFi.Country, apSSID, SetupAPPassword)
-	if err := atomicWrite(filepath.Join(m.Dir, "hostapd.conf"), []byte(hostapd), 0600); err != nil {
+	if err := atomicfile.Write(filepath.Join(m.Dir, "hostapd.conf"), []byte(hostapd), 0600); err != nil {
 		return err
 	}
 	dnsmasq := "bind-interfaces\nport=53\ndhcp-range=10.42.0.10,10.42.0.100,255.255.255.0,12h\ndhcp-option=3,10.42.0.1\ndhcp-option=6,10.42.0.1\naddress=/#/10.42.0.1\n"
-	if err := atomicWrite(filepath.Join(m.Dir, "dnsmasq.conf"), []byte(dnsmasq), 0644); err != nil {
+	if err := atomicfile.Write(filepath.Join(m.Dir, "dnsmasq.conf"), []byte(dnsmasq), 0644); err != nil {
 		return err
 	}
 	wpa := fmt.Sprintf("country=%s\nctrl_interface=/run/wpa_supplicant\nupdate_config=0\nnetwork={\n  ssid=\"%s\"\n  psk=\"%s\"\n  scan_ssid=%d\n}\n",
 		cfg.WiFi.Country, wpaQuote(cfg.WiFi.SSID), wpaQuote(cfg.WiFi.PSK), boolInt(cfg.WiFi.Hidden))
-	if err := atomicWrite(filepath.Join(m.Dir, "wpa_supplicant.conf"), []byte(wpa), 0600); err != nil {
+	if err := atomicfile.Write(filepath.Join(m.Dir, "wpa_supplicant.conf"), []byte(wpa), 0600); err != nil {
 		return err
 	}
 	if m.Run != nil {
@@ -123,8 +124,12 @@ func (m *Manager) InitData() error {
 	if err := os.Chmod(m.DataPath("ssh"), 0755); err != nil {
 		return err
 	}
-	if err := m.Store.Ensure(); err != nil {
+	quarantined, err := m.Store.Ensure()
+	if err != nil {
 		return err
+	}
+	if quarantined != "" {
+		fmt.Fprintf(os.Stderr, "laserbridge: unreadable configuration moved to %s; defaults restored\n", quarantined)
 	}
 	key := m.DataPath("ssh", "ssh_host_ed25519_key")
 	if _, err := os.Stat(key); os.IsNotExist(err) {
@@ -159,7 +164,7 @@ func (m *Manager) InitData() error {
 		if err != nil {
 			return fmt.Errorf("read generated SSH public key: %w", err)
 		}
-		if err := atomicWrite(authorized, append([]byte(strings.TrimSpace(string(publicKey))), '\n'), 0644); err != nil {
+		if err := atomicfile.Write(authorized, append([]byte(strings.TrimSpace(string(publicKey))), '\n'), 0644); err != nil {
 			return err
 		}
 	}
@@ -169,7 +174,7 @@ func (m *Manager) InitData() error {
 		if _, err := rand.Read(random); err != nil {
 			return fmt.Errorf("generate setup AP suffix: %w", err)
 		}
-		if err := atomicWrite(apSSIDPath, []byte("LaserBridge-"+strings.ToUpper(hex.EncodeToString(random))+"\n"), 0600); err != nil {
+		if err := atomicfile.Write(apSSIDPath, []byte("LaserBridge-"+strings.ToUpper(hex.EncodeToString(random))+"\n"), 0600); err != nil {
 			return err
 		}
 	}
@@ -206,14 +211,6 @@ func (m *Manager) RunUstreamer() error {
 	}
 	args := m.UstreamerArgs(cfg, format)
 	return syscall.Exec("/usr/bin/ustreamer", append([]string{"ustreamer"}, args...), os.Environ())
-}
-
-func atomicWrite(path string, data []byte, mode os.FileMode) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, mode); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
 }
 
 func readFile(path string) string {

@@ -164,13 +164,18 @@ func (s *Server) devices(w http.ResponseWriter, _ *http.Request) {
 	}
 	videoResult := make([]videoDevice, 0, len(video))
 	for _, path := range video {
-		resolved, _ := filepath.EvalSymlinks(path)
-		base := filepath.Base(resolved)
-		name := readTrimmed(filepath.Join("/sys/class/video4linux", base, "name"))
+		name := readTrimmed(filepath.Join("/sys/class/video4linux", filepath.Base(resolve(path)), "name"))
 		capabilities := ""
 		if s.Runner != nil {
-			if out, err := s.Runner.Run("v4l2-ctl", "--device", path, "--list-formats-ext"); err == nil {
-				capabilities = strings.TrimSpace(string(out))
+			out, err := s.Runner.Run("v4l2-ctl", "--device", path, "--list-formats-ext")
+			capabilities = strings.TrimSpace(string(out))
+			// A node that answers with an empty format list cannot be streamed
+			// from. Modern kernels register a metadata node next to every
+			// capture node, and offering it as a camera only invites a broken
+			// selection. A failed query says nothing about the device - it may
+			// simply be busy - so that device is kept.
+			if err == nil && capabilities == "" {
+				continue
 			}
 		}
 		videoResult = append(videoResult, videoDevice{Path: path, Stable: strings.Contains(path, "/by-id/"), Name: name, Capabilities: capabilities})
@@ -178,6 +183,10 @@ func (s *Server) devices(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"serial": serialResult, "video": videoResult})
 }
 
+// discover lists the device nodes matching patterns, in pattern order. A
+// device reachable under several names - the stable /dev/*/by-id/ symlink and
+// the kernel's own /dev/video0 - is reported once, under the first pattern
+// that found it, so that querying it stays a single call.
 func discover(patterns []string) []string {
 	seen := map[string]bool{}
 	var result []string
@@ -185,11 +194,19 @@ func discover(patterns []string) []string {
 		matches, _ := filepath.Glob(pattern)
 		sort.Strings(matches)
 		for _, match := range matches {
-			if _, err := os.Stat(match); err == nil && !seen[match] {
-				seen[match] = true
+			target := resolve(match)
+			if _, err := os.Stat(match); err == nil && !seen[target] {
+				seen[target] = true
 				result = append(result, match)
 			}
 		}
 	}
 	return result
+}
+
+func resolve(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return path
 }

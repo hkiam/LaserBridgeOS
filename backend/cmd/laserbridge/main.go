@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -34,7 +35,7 @@ func run(args []string) error {
 	runner := lbruntime.ExecRunner{}
 	manager := &lbruntime.Manager{Store: store, Dir: runtimeDir, DataDir: dataDir, Run: runner}
 	if len(args) == 0 {
-		return errors.New("usage: laserbridge <serve|init|apply|run-ustreamer|ssh-enabled>")
+		return errors.New("usage: laserbridge <serve|init|apply|run-ustreamer|ssh-enabled|boot-confirm>")
 	}
 	switch args[0] {
 	case "init":
@@ -43,6 +44,8 @@ func run(args []string) error {
 		return manager.Apply()
 	case "run-ustreamer":
 		return manager.RunUstreamer()
+	case "boot-confirm":
+		return newUpdater(manager).ConfirmBoot()
 	case "ssh-enabled":
 		cfg, err := store.Load()
 		if err != nil {
@@ -73,13 +76,18 @@ func run(args []string) error {
 				return fmt.Errorf("unknown argument %q", args[i])
 			}
 		}
-		if err := store.Ensure(); err != nil {
+		quarantined, err := store.Ensure()
+		if err != nil {
 			return err
 		}
+		if quarantined != "" {
+			log.Printf("laserbridge: unreadable configuration moved to %s; defaults restored", quarantined)
+		}
+		// Without root the appliance cannot drive services, so the API is
+		// served read-only rather than reporting failures for every command.
 		if os.Geteuid() != 0 {
 			manager.Run = nil
-			runnerForAPI := lbruntime.Runner(nil)
-			return serve(listen, webRoot, store, manager, runnerForAPI)
+			return serve(listen, webRoot, store, manager, nil)
 		}
 		return serve(listen, webRoot, store, manager, runner)
 	default:
@@ -87,10 +95,18 @@ func run(args []string) error {
 	}
 }
 
+func newUpdater(manager *lbruntime.Manager) *lbupdate.Manager {
+	return &lbupdate.Manager{
+		DataDir:     manager.DataDir,
+		RuntimeDir:  manager.Dir,
+		VersionPath: getenv("LASERBRIDGE_VERSION_FILE", "/etc/laserbridge/version"),
+	}
+}
+
 func serve(listen, webRoot string, store *config.Store, manager *lbruntime.Manager, runner lbruntime.Runner) error {
 	logger := log.New(os.Stdout, "laserbridge-web: ", log.LstdFlags)
-	versionPath := getenv("LASERBRIDGE_VERSION_FILE", "/etc/laserbridge/version")
-	updater := &lbupdate.Manager{DataDir: manager.DataDir, RuntimeDir: manager.Dir, VersionPath: versionPath}
+	updater := newUpdater(manager)
+	versionPath := updater.VersionPath
 	server := &http.Server{
 		Addr:              listen,
 		Handler:           (&api.Server{Store: store, Runtime: manager, Runner: runner, Updater: updater, WebRoot: filepath.Clean(webRoot), VersionPath: versionPath, Logger: logger}).Handler(),
@@ -109,7 +125,11 @@ func serve(listen, webRoot string, store *config.Store, manager *lbruntime.Manag
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	select {
 	case <-signals:
-		return server.Close()
+		// A system update can be several hundred megabytes in flight; give it
+		// a chance to finish writing a slot instead of cutting it in half.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return server.Shutdown(ctx)
 	case err := <-errorsCh:
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil

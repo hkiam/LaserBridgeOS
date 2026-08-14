@@ -29,7 +29,7 @@ func setupTestServer(t *testing.T) (http.Handler, *config.Store, string) {
 	dir := t.TempDir()
 	dataDir := filepath.Join(dir, "data")
 	store := config.NewStore(filepath.Join(dataDir, "config.yaml"))
-	if err := store.Ensure(); err != nil {
+	if _, err := store.Ensure(); err != nil {
 		t.Fatal(err)
 	}
 	manager := &lbruntime.Manager{Store: store, Dir: filepath.Join(dir, "run"), DataDir: dataDir}

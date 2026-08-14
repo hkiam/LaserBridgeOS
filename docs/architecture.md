@@ -25,7 +25,11 @@ configuration, and SSH host keys. DHCP's
 configuration is generated into `/run/laserbridge`, not into `/etc`.
 
 GRUB reads `active-slot.cfg` and immediately loads that slot's kernel and
-initramfs. It has no interactive menu or timeout. The initramfs reads the slot
+initramfs. It has no interactive menu or timeout. Before handing over to the
+kernel it raises a boot-attempt counter in `boot/grubenv`;
+`laserbridge-boot-confirm` resets that counter once the default runlevel is
+up. Three attempts that are never confirmed select the other slot, so a slot
+that cannot boot is undone without a console. The initramfs reads the slot
 from the kernel command line, finds the uniquely labelled `LBBOOT` partition,
 and mounts adjacent partition 2 or 3 as the SquashFS root. This accommodates
 SATA, USB, NVMe, MMC, and virtio device names; Alpine's stock initramfs does not
@@ -133,7 +137,12 @@ The backend streams uploads onto `/data`, writes and syncs the inactive root,
 atomically replaces only that slot's boot payloads, and commits
 `active-slot.cfg` last. Until that final write the existing slot remains the
 boot default. `/data` is outside both slots, so settings and device keys
-survive. Rollback explicitly selects the other slot through the WebUI. When a
-slot cannot reach the UI, an operator can mount the FAT32 `LBBOOT` partition on
-another system and change `boot/active-slot.cfg`. Automatic release discovery
-and a boot-attempt counter remain future work.
+survive. Rollback explicitly selects the other slot through the WebUI.
+
+A slot that never reaches userspace is rolled back by GRUB itself after three
+unconfirmed attempts. The recovered slot then proves itself, so
+`laserbridge-boot-confirm` writes it into `active-slot.cfg` and discards the
+staged update that failed instead of asking for another reboot into it. An
+operator can still mount the FAT32 `LBBOOT` partition on another system and
+change `boot/active-slot.cfg` by hand. Automatic release discovery remains
+future work.

@@ -22,4 +22,17 @@ if grep -Eq ':/sbin/openrc ([^-]|$)' rootfs/etc/inittab; then
 	fail "OpenRC is not started in quiet mode"
 fi
 
-echo "Boot policy: direct, headless, parallel"
+# A headless appliance has no console to recover from a slot that never boots
+# or from Wi-Fi credentials that never associate. Both safety nets below are
+# the only way back in, so guard them against a silent removal.
+grep -q 'save_env' build/grub.cfg || fail "GRUB does not persist a boot-attempt counter"
+grep -q 'load_env' build/grub.cfg || fail "GRUB does not read the boot-attempt counter"
+grep -q 'laserbridge-boot-confirm' build/prepare-rootfs.sh ||
+	fail "the boot confirmation service is not enabled in any runlevel"
+grep -q 'grub-editenv' build/build-image.sh || fail "the image ships no GRUB environment block"
+grep -q 'wait_for_association' rootfs/etc/init.d/laserbridge-network ||
+	fail "Wi-Fi client mode does not wait for association before DHCP"
+grep -q 'start_access_point' rootfs/etc/init.d/laserbridge-network ||
+	fail "Wi-Fi client mode has no setup-AP recovery path"
+
+echo "Boot policy: direct, headless, parallel, recoverable"

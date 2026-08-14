@@ -4,6 +4,10 @@
 
 description="LaserBridgeOS Wi-Fi setup AP and client manager"
 
+# Seconds to wait for the supplicant to associate before treating the
+# configured Wi-Fi as unusable.
+ASSOCIATION_TIMEOUT=45
+
 depend() {
 	need laserbridge-init
 }
@@ -18,6 +22,22 @@ wireless_interface() {
 	return 1
 }
 
+# wired_link reports whether a cable is plugged into any non-wireless
+# interface. Ethernet is the appliance's other way in, so its presence decides
+# whether a Wi-Fi failure is merely inconvenient or locks the user out.
+wired_link() {
+	for candidate in /sys/class/net/*; do
+		name=$(basename "$candidate")
+		if [ "$name" = "lo" ] || [ -d "$candidate/wireless" ]; then
+			continue
+		fi
+		if [ "$(cat "$candidate/carrier" 2>/dev/null)" = "1" ]; then
+			return 0
+		fi
+	done
+	return 1
+}
+
 stop_process() {
 	pidfile=$1
 	if [ -s "$pidfile" ]; then
@@ -26,13 +46,68 @@ stop_process() {
 	fi
 }
 
-stop() {
-	ebegin "Stopping LaserBridgeOS Wi-Fi"
+stop_all() {
 	stop_process /run/laserbridge/udhcpc-wlan.pid
 	stop_process /run/laserbridge/wpa_supplicant.pid
 	stop_process /run/laserbridge/dnsmasq.pid
 	stop_process /run/laserbridge/hostapd.pid
+}
+
+stop() {
+	ebegin "Stopping LaserBridgeOS Wi-Fi"
+	stop_all
 	eend 0
+}
+
+start_access_point() {
+	interface=$1
+	ip address add 10.42.0.1/24 dev "$interface"
+	hostapd -B -P /run/laserbridge/hostapd.pid -i "$interface" /run/laserbridge/hostapd.conf || return 1
+	dnsmasq --conf-file=/run/laserbridge/dnsmasq.conf --interface="$interface" --pid-file=/run/laserbridge/dnsmasq.pid || return 1
+	return 0
+}
+
+# wait_for_association blocks until the supplicant reports a finished
+# association. wpa_supplicant -B returns as soon as it has forked, long before
+# the link is usable, and a DHCP client started against an unassociated
+# interface simply finds nothing.
+wait_for_association() {
+	interface=$1
+	waited=0
+	while [ "$waited" -lt "$ASSOCIATION_TIMEOUT" ]; do
+		if wpa_cli -i "$interface" status 2>/dev/null | grep -q '^wpa_state=COMPLETED$'; then
+			return 0
+		fi
+		sleep 1
+		waited=$((waited + 1))
+	done
+	return 1
+}
+
+start_client() {
+	interface=$1
+	mkdir -p /run/wpa_supplicant
+	wpa_supplicant -B -P /run/laserbridge/wpa_supplicant.pid -i "$interface" \
+		-c /run/laserbridge/wpa_supplicant.conf || return 1
+	if wait_for_association "$interface"; then
+		udhcpc -b -t 5 -T 3 -A 5 -p /run/laserbridge/udhcpc-wlan.pid -i "$interface" \
+			-x "hostname:$(hostname)" || return 1
+		return 0
+	fi
+
+	# A wrong passphrase or a renamed network would otherwise leave a
+	# configured appliance permanently unreachable: there is no console login
+	# and Wi-Fi is its only link. Reopening the setup access point turns that
+	# into something the user can fix from a phone.
+	ewarn "No Wi-Fi association within ${ASSOCIATION_TIMEOUT}s"
+	stop_process /run/laserbridge/wpa_supplicant.pid
+	ip address flush dev "$interface" || true
+	if wired_link; then
+		ewarn "Ethernet is connected; leaving Wi-Fi down"
+		return 0
+	fi
+	ewarn "No Ethernet link either; reopening the setup access point"
+	start_access_point "$interface"
 }
 
 start() {
@@ -43,10 +118,7 @@ start() {
 		return 0
 	fi
 
-	stop_process /run/laserbridge/udhcpc-wlan.pid
-	stop_process /run/laserbridge/wpa_supplicant.pid
-	stop_process /run/laserbridge/dnsmasq.pid
-	stop_process /run/laserbridge/hostapd.pid
+	stop_all
 	ip link set "$interface" down
 	ip address flush dev "$interface" || true
 	ip link set "$interface" up
@@ -54,17 +126,13 @@ start() {
 	case "$mode" in
 		ap)
 			ebegin "Starting setup AP on $interface"
-			ip address add 10.42.0.1/24 dev "$interface"
-			hostapd -B -P /run/laserbridge/hostapd.pid -i "$interface" /run/laserbridge/hostapd.conf || return 1
-			dnsmasq --conf-file=/run/laserbridge/dnsmasq.conf --interface="$interface" --pid-file=/run/laserbridge/dnsmasq.pid || return 1
-			eend 0
+			start_access_point "$interface"
+			eend $?
 			;;
 		client)
 			ebegin "Connecting $interface to configured Wi-Fi"
-			mkdir -p /run/wpa_supplicant
-			wpa_supplicant -B -P /run/laserbridge/wpa_supplicant.pid -i "$interface" -c /run/laserbridge/wpa_supplicant.conf || return 1
-			udhcpc -b -t 1 -T 1 -A 0 -p /run/laserbridge/udhcpc-wlan.pid -i "$interface" -x "hostname:$(hostname)" || return 1
-			eend 0
+			start_client "$interface"
+			eend $?
 			;;
 		*)
 			einfo "Wi-Fi is disabled"

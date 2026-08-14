@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/laserbridgeos/laserbridgeos/backend/internal/atomicfile"
 	"github.com/laserbridgeos/laserbridgeos/backend/internal/config"
 	"github.com/laserbridgeos/laserbridgeos/backend/internal/runtime"
 )
@@ -126,20 +127,20 @@ func (s *Server) completeSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	authorizedPath := s.dataPath("ssh", "authorized_keys")
-	previousAuthorized, _ := os.ReadFile(authorizedPath)
-	if err := atomicWriteFile(authorizedPath, []byte(publicKey+"\n"), 0644); err != nil {
+	restoreAuthorized := authorizedRestorer(authorizedPath)
+	if err := atomicfile.Write(authorizedPath, []byte(publicKey+"\n"), 0644); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not install SSH key")
 		return
 	}
 	if err := s.Store.Save(next); err != nil {
-		_ = atomicWriteFile(authorizedPath, previousAuthorized, 0644)
+		restoreAuthorized()
 		writeError(w, http.StatusInternalServerError, "could not save setup")
 		return
 	}
 	if s.Runtime != nil {
 		if err := s.Runtime.Apply(); err != nil {
 			_ = s.Store.Save(previous)
-			_ = atomicWriteFile(authorizedPath, previousAuthorized, 0644)
+			restoreAuthorized()
 			_ = s.Runtime.Apply()
 			writeError(w, http.StatusInternalServerError, "could not apply setup; previous configuration restored")
 			return
@@ -239,13 +240,14 @@ func validatePublicKey(value string) error {
 	return nil
 }
 
-func atomicWriteFile(path string, data []byte, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return err
+// authorizedRestorer captures the current authorized_keys file so a failed
+// setup can be undone. A file that did not exist yet is removed again rather
+// than left behind empty, which would otherwise look like a deliberate
+// "no key is authorized" state.
+func authorizedRestorer(path string) func() {
+	previous, err := os.ReadFile(path)
+	if err != nil {
+		return func() { _ = os.Remove(path) }
 	}
-	temporary := path + ".tmp"
-	if err := os.WriteFile(temporary, data, mode); err != nil {
-		return err
-	}
-	return os.Rename(temporary, path)
+	return func() { _ = atomicfile.Write(path, previous, 0644) }
 }

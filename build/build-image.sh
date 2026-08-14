@@ -34,6 +34,10 @@ for slot in slot-a slot-b; do
 	install -m 0644 /work/rootfs/boot/initramfs-lts "/work/esp/boot/$slot/initramfs-lts"
 done
 printf '%s\n' 'set laserbridge_slot=a' > /work/esp/boot/active-slot.cfg
+# Fixed-size environment block that GRUB rewrites in place to track boot
+# attempts. It must exist in the image; GRUB cannot create it at boot time.
+grub-editenv /work/esp/boot/grubenv create
+grub-editenv /work/esp/boot/grubenv set laserbridge_try=0 laserbridge_override=
 rm -rf /work/rootfs/boot/*
 find /work/rootfs -exec touch -h -d "@$BUILD_EPOCH" {} +
 

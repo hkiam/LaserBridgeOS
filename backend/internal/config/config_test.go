@@ -52,10 +52,69 @@ func TestParserRejectsUnknownKey(t *testing.T) {
 	}
 }
 
+func TestEnsureQuarantinesUnusableConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{"unparsable", "system:\n  hostname: \"laserbridge\"\n  surprise: yes\n"},
+		{"invalid", "system:\n  hostname: \"not a hostname\"\n"},
+		{"truncated", "system:\n  hostn"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(test.content), 0640); err != nil {
+				t.Fatal(err)
+			}
+			store := NewStore(path)
+			quarantined, err := store.Ensure()
+			if err != nil {
+				t.Fatalf("Ensure() = %v, want the appliance to recover", err)
+			}
+			if quarantined != path+".broken" {
+				t.Fatalf("quarantined = %q, want %q", quarantined, path+".broken")
+			}
+			kept, err := os.ReadFile(quarantined)
+			if err != nil || string(kept) != test.content {
+				t.Fatalf("broken config not preserved: %q, %v", kept, err)
+			}
+			loaded, err := store.Load()
+			if err != nil {
+				t.Fatalf("Load() after recovery = %v", err)
+			}
+			if !reflect.DeepEqual(loaded, Default()) {
+				t.Fatalf("recovered config = %+v, want defaults", loaded)
+			}
+		})
+	}
+}
+
+func TestEnsureKeepsUsableConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	store := NewStore(path)
+	if _, err := store.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := store.Load()
+	cfg.GRBL.Port = 2323
+	if err := store.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	quarantined, err := store.Ensure()
+	if err != nil || quarantined != "" {
+		t.Fatalf("Ensure() = %q, %v; want no recovery", quarantined, err)
+	}
+	loaded, _ := store.Load()
+	if loaded.GRBL.Port != 2323 {
+		t.Fatalf("port = %d, want the stored 2323", loaded.GRBL.Port)
+	}
+}
+
 func TestStoreWritesAtomically(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	store := NewStore(path)
-	if err := store.Ensure(); err != nil {
+	if _, err := store.Ensure(); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := store.Load()

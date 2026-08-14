@@ -49,18 +49,34 @@ Install. Keep power connected until the UI confirms that the inactive slot is
 ready, then reboot. The status card shows the current and staged slots.
 
 If the new release is unsuitable but still reaches the WebUI, choose Roll back
-and reboot. There is no GRUB menu or boot delay. If the new slot cannot start
-the UI, attach the medium to another system, mount the FAT32 `LBBOOT` partition,
-and set `boot/active-slot.cfg` to either `set laserbridge_slot=a` or
-`set laserbridge_slot=b`. There is currently no automatic boot-attempt
-rollback.
+and reboot. There is no GRUB menu or boot delay.
+
+If the new slot cannot start at all, no action is needed: GRUB counts the boot
+attempts and switches back to the previous slot after the third one that never
+reaches a running system. The appliance then keeps that slot and drops the
+failed update. Recovery takes about three boot cycles, so give it a few
+minutes before intervening.
+
+To force a slot by hand, attach the medium to another system, mount the FAT32
+`LBBOOT` partition, and set `boot/active-slot.cfg` to either
+`set laserbridge_slot=a` or `set laserbridge_slot=b`. Clear a fallback that
+GRUB recorded earlier with `grub-editenv boot/grubenv set laserbridge_override=`.
 
 ## Configuration and recovery
 
 The UI writes `/data/config.yaml` atomically. A malformed manual edit is
-rejected and the last generated runtime files remain in use. To recover, mount
-`LBDATA` elsewhere and restore `config.yaml`; deleting it causes defaults to be
+rejected and the last generated runtime files remain in use. If the file is
+already unreadable at boot, the initializer moves it to `config.yaml.broken`
+and starts from the defaults rather than leaving the appliance without a WebUI;
+the appliance is then reachable again under the default hostname
+`laserbridge.local`. Mount `LBDATA` elsewhere to inspect the quarantined file,
+or restore `config.yaml` from a backup. Deleting it also causes defaults to be
 created on the next boot.
+
+If the configured Wi-Fi never associates and no network cable is connected, the
+appliance reopens the setup access point after about 45 seconds so the
+credentials can be corrected from a phone. With a cable connected it stays on
+Ethernet and leaves Wi-Fi down.
 
 The root filesystem cannot be modified. Persist custom SSH keys and appliance
 settings only under `/data`.
