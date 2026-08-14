@@ -46,12 +46,17 @@ load_env() {
 	SSH_KEY=${LASERBRIDGE_SSH_KEY:-${LIGHTBURN_SSH_KEY:-}}
 	SSH_PORT=${LASERBRIDGE_SSH_PORT:-${LIGHTBURN_SSH_PORT:-}}
 	SSH_PASSWORD=${LASERBRIDGE_PASSWORD:-${LIGHTBURN_PASSWORD:-}}
-	RECOVERY_TARGET=${LASERBRIDGE_RECOVERY_SSH:-$SSH_TARGET}
+	# After the kexec the target is LaserBridgeOS regardless of what ran
+	# before, so the account is laserbridge - not whatever user the installed
+	# system uses - and only the injected key can log in.
+	RECOVERY_TARGET=${LASERBRIDGE_RECOVERY_SSH:-laserbridge@${SSH_TARGET#*@}}
 	TARGET_DISK=${LASERBRIDGE_DISK:-${LIGHTBURN_DISK:-}}
 	PUBLIC_KEY=${LASERBRIDGE_PUBKEY:-}
 	[ -n "$SSH_TARGET" ] ||
 		die "no target configured; set LASERBRIDGE_SSH in .env (see .env.example)"
 }
+
+SSH_CMD="ssh"
 
 set_ssh_options() {
 	# A RAM boot generates a fresh host key every time, so recovery sessions
@@ -60,7 +65,25 @@ set_ssh_options() {
 	SSH_OPTS="$SSH_OPTS -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
 	[ -n "$SSH_KEY" ] && SSH_OPTS="$SSH_OPTS -i $SSH_KEY"
 	[ -n "$SSH_PORT" ] && SSH_OPTS="$SSH_OPTS -p $SSH_PORT"
+
+	# A foreign Linux may only offer password authentication. The password
+	# goes through the environment rather than the command line so it does not
+	# show up in the process list.
+	if [ -n "$SSH_PASSWORD" ] && ! key_auth_works; then
+		command -v sshpass >/dev/null ||
+			die "$SSH_TARGET wants a password but sshpass is not installed (brew install sshpass)"
+		SSHPASS=$SSH_PASSWORD
+		export SSHPASS
+		SSH_CMD="sshpass -e ssh"
+		SSH_OPTS="$SSH_OPTS -o PreferredAuthentications=password -o PubkeyAuthentication=no"
+		info "Using password authentication for $SSH_TARGET"
+	fi
 	return 0
+}
+
+key_auth_works() {
+	# shellcheck disable=SC2086
+	ssh -n -o BatchMode=yes $SSH_OPTS "$SSH_TARGET" true 2>/dev/null
 }
 
 CURRENT_TARGET=""
@@ -70,13 +93,13 @@ CURRENT_TARGET=""
 # target_ssh_stdin is the variant that deliberately forwards stdin, used to
 # stream artefacts onto the target.
 target_ssh() {
-	# shellcheck disable=SC2086 # SSH_OPTS is a deliberate word list
-	ssh -n $SSH_OPTS "$CURRENT_TARGET" "$@"
+	# shellcheck disable=SC2086 # SSH_CMD and SSH_OPTS are deliberate word lists
+	$SSH_CMD -n $SSH_OPTS "$CURRENT_TARGET" "$@"
 }
 
 target_ssh_stdin() {
-	# shellcheck disable=SC2086,SC2029 # deliberate word list; remote expansion intended
-	ssh $SSH_OPTS "$CURRENT_TARGET" "$@"
+	# shellcheck disable=SC2086,SC2029 # deliberate word lists; remote expansion intended
+	$SSH_CMD $SSH_OPTS "$CURRENT_TARGET" "$@"
 }
 
 # ---------------------------------------------------------------- remote helper
@@ -108,23 +131,46 @@ probe_privilege() {
 		PRIVILEGE="doas"
 	elif target_ssh 'command -v sudo >/dev/null && sudo -n true 2>/dev/null'; then
 		PRIVILEGE="sudo -n"
-	elif [ -n "$SSH_PASSWORD" ] &&
-		target_ssh "command -v sudo >/dev/null && printf '%s\n' '$SSH_PASSWORD' | sudo -S true 2>/dev/null"; then
-		# Prime sudo's timestamp once; later calls reuse it non-interactively.
-		PRIVILEGE="sudo -n"
+	elif [ -n "$SSH_PASSWORD" ] && sudo_password_works; then
+		PRIVILEGE="sudo-password"
 	else
 		die "cannot become root on $CURRENT_TARGET (no doas rule, no passwordless sudo, no LASERBRIDGE_PASSWORD)"
 	fi
 }
 
-# shellcheck disable=SC2029 # the helper path and arguments expand here on purpose
-remote() {
-	target_ssh "$PRIVILEGE $HELPER $*"
+# sudo_password_works checks that the account can reach root with the
+# configured password. sudo's timestamp is not reused afterwards: it does not
+# survive between SSH sessions, so every privileged call carries the password
+# itself.
+sudo_password_works() {
+	printf '%s\n' "$SSH_PASSWORD" |
+		target_ssh_stdin 'command -v sudo >/dev/null && sudo -S -p "" true' >/dev/null 2>&1
 }
 
-# shellcheck disable=SC2029 # as above; this variant streams stdin to the target
+# remote and remote_stdin run one privileged helper command. In password mode
+# the password is fed to sudo -S as the first line of stdin; sudo consumes
+# exactly that line and the command it starts sees the rest, which is what
+# lets a payload be streamed through the same pipe. Nothing is written to the
+# target's disk and nothing appears in its process list - unlike an askpass
+# file, which would survive on a system that a kexec is about to replace.
+# shellcheck disable=SC2029 # the helper path and arguments expand there on purpose
+remote() {
+	if [ "$PRIVILEGE" = "sudo-password" ]; then
+		printf '%s\n' "$SSH_PASSWORD" |
+			target_ssh_stdin "sudo -S -p '' $HELPER $*"
+	else
+		target_ssh "$PRIVILEGE $HELPER $*"
+	fi
+}
+
+# shellcheck disable=SC2029 # as above; this variant streams a payload
 remote_stdin() {
-	target_ssh_stdin "$PRIVILEGE $HELPER $*"
+	if [ "$PRIVILEGE" = "sudo-password" ]; then
+		{ printf '%s\n' "$SSH_PASSWORD"; cat; } |
+			target_ssh_stdin "sudo -S -p '' $HELPER $*"
+	else
+		target_ssh_stdin "$PRIVILEGE $HELPER $*"
+	fi
 }
 
 # ---------------------------------------------------------------- local artifacts
@@ -356,22 +402,68 @@ kexec_into_ram() {
 	remote kexec-exec >/dev/null 2>&1 || true
 }
 
-wait_for_recovery() {
+# operator_private_key names the counterpart of the public key injected into
+# the RAM image, which is the only credential that system will accept.
+operator_private_key() {
+	if [ -n "$PUBLIC_KEY" ]; then
+		printf '%s' "${PUBLIC_KEY%.pub}"
+	elif [ -n "$SSH_KEY" ]; then
+		printf '%s' "$SSH_KEY"
+	else
+		printf '%s' "$HOME/.ssh/id_ed25519"
+	fi
+}
+
+# The RAM system has password authentication disabled and a freshly generated
+# host key, so the session that follows a kexec needs different settings than
+# the one that started it.
+switch_to_recovery_ssh() {
 	CURRENT_TARGET=$RECOVERY_TARGET
-	info "Waiting for the RAM system on $CURRENT_TARGET"
+	SSH_CMD="ssh"
+	unset SSHPASS
+	SSH_OPTS="-o ConnectTimeout=10 -o StrictHostKeyChecking=no"
+	SSH_OPTS="$SSH_OPTS -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+	SSH_OPTS="$SSH_OPTS -o PreferredAuthentications=publickey -o BatchMode=yes"
+	SSH_OPTS="$SSH_OPTS -i $(operator_private_key)"
+	[ -n "$SSH_PORT" ] && SSH_OPTS="$SSH_OPTS -p $SSH_PORT"
+	return 0
+}
+
+# recovery_candidates lists where the RAM system may answer. It sends a
+# different DHCP hostname than the installed system - always "laserbridge" -
+# so the lease it gets is often a different address than the one configured
+# here. It announces itself over mDNS, which is the reliable way to find it
+# again.
+recovery_candidates() {
+	printf '%s\n' "$RECOVERY_TARGET"
+	case "$RECOVERY_TARGET" in
+		*@laserbridge.local) ;;
+		*) printf 'laserbridge@laserbridge.local\n' ;;
+	esac
+}
+
+wait_for_recovery() {
+	switch_to_recovery_ssh
+	info "Waiting for the RAM system ($(recovery_candidates | tr '\n' ' '))"
 	waited=0
-	while [ "$waited" -lt 180 ]; do
+	while [ "$waited" -lt 240 ]; do
 		sleep 5
 		waited=$((waited + 5))
-		if target_ssh 'grep -q laserbridge.ramboot=1 /proc/cmdline' 2>/dev/null; then
-			info "RAM system is up after ${waited}s"
-			probe_privilege
-			return 0
-		fi
+		for candidate in $(recovery_candidates); do
+			CURRENT_TARGET=$candidate
+			if target_ssh 'grep -q laserbridge.ramboot=1 /proc/cmdline' 2>/dev/null; then
+				info "RAM system is up after ${waited}s on $CURRENT_TARGET"
+				RECOVERY_TARGET=$CURRENT_TARGET
+				probe_privilege
+				return 0
+			fi
+		done
 	done
-	die "the RAM system did not come back within ${waited}s.
-      The target may have rebooted into its installed system instead - kexec
-      is not supported by every firmware. Check with --status."
+	die "the RAM system did not answer within ${waited}s at $(recovery_candidates | tr '\n' ' ').
+      It may hold a different DHCP lease, because it identifies itself as
+      \"laserbridge\" rather than as the installed system. Look for it on the
+      network and set LASERBRIDGE_RECOVERY_SSH, or power-cycle the device to
+      return to the installed system."
 }
 
 confirm_install() {

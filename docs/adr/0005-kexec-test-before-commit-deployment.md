@@ -90,6 +90,16 @@ so `kexec -s` is unavailable as well. `kexec -l` therefore fails with
 `Operation not permitted` on a LaserBridgeOS host, and no change to the
 appliance's configuration can alter it.
 
+The full path has since been exercised against real hardware from a foreign
+Linux: a Z83F running Ubuntu 24.04 kexec'd into the image and served its web
+interface from RAM while its eMMC stayed unmounted. Two things that only show
+up outside a VM came out of that run. The RAM system sends `laserbridge` as
+its DHCP hostname and therefore usually receives a different lease than the
+installed system, so `deploy.sh` also looks for it over mDNS. And completing
+the first-boot wizard inside a RAM session used to replace `authorized_keys`
+outright, discarding the deployment key that started the session; the wizard
+now keeps it.
+
 The RAM boot itself was verified by booting the combined initramfs directly:
 the overlay mounts, `/data` is a tmpfs, no partition of the system disk is
 mounted, the disk is byte-identical afterwards, and the recovery mode drops

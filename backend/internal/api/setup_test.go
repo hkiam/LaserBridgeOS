@@ -89,6 +89,48 @@ func TestFirstBootSetupInstallsKeyAndWiFi(t *testing.T) {
 	}
 }
 
+func TestSetupKeepsTheDeploymentKeyOfARAMSession(t *testing.T) {
+	handler, _, dataDir := setupTestServer(t)
+	setupDir := filepath.Join(dataDir, "setup")
+	if err := os.MkdirAll(setupDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	deploymentKey := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDEPLOY operator@mac"
+	injected := filepath.Join(dataDir, "ramboot-authorized-keys")
+	if err := os.WriteFile(injected, []byte(deploymentKey+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	previous := rambootKeyPath
+	rambootKeyPath = injected
+	t.Cleanup(func() { rambootKeyPath = previous })
+
+	cookie, token := csrf(t, handler)
+	body, _ := json.Marshal(setupRequest{
+		Hostname: "workshop-laser", SSID: "Workshop WiFi", PSK: "safe-password",
+		Country: "de", PublicKey: testPublicKey(),
+	})
+	request := httptest.NewRequest(http.MethodPost, "/api/setup/complete", bytes.NewReader(body))
+	request.Header.Set("X-CSRF-Token", token)
+	request.AddCookie(cookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+	}
+
+	authorized, err := os.ReadFile(filepath.Join(dataDir, "ssh", "authorized_keys"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Running the wizard inside a RAM session must not lock out the machine
+	// that started it: both the chosen key and the deployment key stay.
+	for _, want := range []string{testPublicKey(), deploymentKey} {
+		if !bytes.Contains(authorized, []byte(want)) {
+			t.Fatalf("authorized_keys lost %q:\n%s", want, authorized)
+		}
+	}
+}
+
 func TestInitialKeyDownloadStopsAfterSetup(t *testing.T) {
 	handler, store, dataDir := setupTestServer(t)
 	keyPath := filepath.Join(dataDir, "setup", "laserbridge_ed25519")

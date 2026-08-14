@@ -183,11 +183,35 @@ same artefacts can be written to the disk permanently.
 ./deploy.sh --recovery           # RAM system with dd, zstd, lsblk, blkid
 ```
 
-The RAM boot is verified, but Alpine's stock kernel forbids `kexec_load` and
-cannot be made to allow it at runtime, so the transition currently only works
-from a foreign Linux. `docs/deploy.md` explains the constraint and the two
-ways out; `./deploy.sh --check ./dist` reports whether a given target
-qualifies.
+Run `./deploy.sh --check ./dist` first: it verifies every artefact, the
+architecture, the available memory and the target disk without changing
+anything.
+
+### Open point: the kexec trigger
+
+The RAM boot itself is verified — the overlay mounts, `/data` is a tmpfs, no
+partition of the system disk is mounted, and the disk is byte-identical
+afterwards. What does not work yet is triggering it *from LaserBridgeOS
+itself*: Alpine's stock `linux-lts` starts with `kernel.kexec_load_disabled=1`
+(no sysctl file sets it, kernel lockdown is inactive), and that sysctl only
+accepts being written `1`, so it cannot be re-enabled at runtime.
+`CONFIG_KEXEC_FILE` is unset too, so `kexec -s` is missing as well.
+
+Launching from a foreign Linux — Debian, Ubuntu, stock Alpine — works today
+and is verified on real hardware: a Z83F running Ubuntu 24.04 kexec'd into
+the image and served its web interface from RAM with its eMMC untouched. That
+covers bare-metal first installation. Note that the RAM system asks DHCP for
+the name `laserbridge` and so usually appears under a **different address**;
+`deploy.sh` also looks for `laserbridge.local`.
+
+Two ways to close the remaining gap, not yet decided:
+
+| Option | Gains | Costs |
+| --- | --- | --- |
+| Build `linux-lts` with `CONFIG_KEXEC_FILE=y` and no disabled default | real kexec; `--test` stays write-free | the project maintains a kernel |
+| GRUB one-shot RAM boot instead of kexec: stage kernel and initramfs on `/data`, set a flag in `grubenv`, reboot | no custom kernel; reuses the boot-counter machinery from ADR 0004 | a full reboot rather than a kexec, and staging writes to the disk, which `--test` otherwise avoids |
+
+`docs/deploy.md` and ADR 0005 carry the detail.
 
 ## Fast headless boot
 

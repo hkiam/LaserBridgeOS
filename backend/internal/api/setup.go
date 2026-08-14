@@ -128,7 +128,7 @@ func (s *Server) completeSetup(w http.ResponseWriter, r *http.Request) {
 	}
 	authorizedPath := s.dataPath("ssh", "authorized_keys")
 	restoreAuthorized := authorizedRestorer(authorizedPath)
-	if err := atomicfile.Write(authorizedPath, []byte(publicKey+"\n"), 0644); err != nil {
+	if err := atomicfile.Write(authorizedPath, authorizedKeys(publicKey), 0644); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not install SSH key")
 		return
 	}
@@ -238,6 +238,31 @@ func validatePublicKey(value string) error {
 		return errors.New("SSH public key type does not match its payload")
 	}
 	return nil
+}
+
+// rambootKeyPath holds the key that deploy.sh injected into a RAM session.
+// It is a package variable so tests can point it somewhere writable.
+var rambootKeyPath = "/etc/laserbridge/ramboot-authorized-keys"
+
+// authorizedKeys builds the authorized_keys content for a completed setup.
+//
+// Running the setup wizard replaces the file, which is right on an installed
+// appliance. In a RAM session it would also discard the deployment key that
+// put the system there, stranding the operator halfway through a deployment -
+// so that key is kept alongside the one just chosen.
+func authorizedKeys(publicKey string) []byte {
+	content := publicKey + "\n"
+	injected, err := os.ReadFile(rambootKeyPath)
+	if err != nil {
+		return []byte(content)
+	}
+	for _, line := range strings.Split(string(injected), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && line != strings.TrimSpace(publicKey) {
+			content += line + "\n"
+		}
+	}
+	return []byte(content)
 }
 
 // authorizedRestorer captures the current authorized_keys file so a failed

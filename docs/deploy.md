@@ -22,9 +22,22 @@ build the image
 
 ## Status
 
-The workflow is implemented and the RAM boot is verified, but **it cannot
-currently be triggered on Alpine's stock kernel**. See "The kexec blocker"
-below before relying on it.
+`--test` has been run end to end against real hardware: a Z83F mini PC
+running Ubuntu 24.04 (kernel 6.8) kexec'd into the LaserBridgeOS image and
+came up serving its web interface from RAM, with the 58 GiB eMMC untouched -
+`/api/status` reported 64 MiB of storage, which is the tmpfs `/data`.
+
+Launching from LaserBridgeOS itself does not work yet; see "The kexec
+blocker".
+
+### The RAM system takes a different address
+
+It sends `laserbridge` as its DHCP hostname rather than the installed
+system's, so the router usually hands it a **different lease**. In the run
+above the device moved from `.83` to `.166`. `deploy.sh` therefore also looks
+for `laserbridge.local` over mDNS, and `LASERBRIDGE_RECOVERY_SSH` pins the
+address when neither applies. If a deployment seems to hang after the kexec,
+the appliance is most likely up and answering somewhere else.
 
 ## Configuration
 
@@ -61,6 +74,11 @@ it. This was verified by comparing the disk's SHA-256 before and after a RAM
 boot - byte for byte identical.
 
 `reboot` returns to the installed system. Nothing has to be undone.
+
+Running the first-boot wizard inside a RAM session is fine: `/data` is a
+tmpfs, so the settings live only for that session, and the deployment key is
+kept alongside the key chosen in the wizard. Without that the wizard would
+replace `authorized_keys` and lock out the machine that started the session.
 
 ### `--install <image-dir>`
 
