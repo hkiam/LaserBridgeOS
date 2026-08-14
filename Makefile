@@ -23,6 +23,7 @@ check:
 	docker run --rm --user $(HOST_UID):$(HOST_GID) -e GOCACHE=/tmp/go-cache -v $(ROOT_DIR):/src -w /src/backend golang:1.23-alpine go vet ./...
 	sh -n deploy.sh build/build-image.sh build/prepare-rootfs.sh scripts/*.sh rootfs/etc/init.d/* rootfs/usr/sbin/laserbridge-deploy
 	sh scripts/check-boot-policy.sh
+	sh scripts/check-web-ui.sh
 
 fmt:
 	docker run --rm --user $(HOST_UID):$(HOST_GID) -e GOCACHE=/tmp/go-cache -v $(ROOT_DIR):/src -w /src/backend golang:1.23-alpine gofmt -w .

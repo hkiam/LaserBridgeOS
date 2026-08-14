@@ -35,6 +35,8 @@ jobs:
           scandir: '.'
       - name: Headless boot policy
         run: sh scripts/check-boot-policy.sh
+      - name: Web UI consistency
+        run: sh scripts/check-web-ui.sh
 
   image:
     needs: [test, shellcheck]

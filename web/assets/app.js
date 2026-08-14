@@ -216,8 +216,12 @@ $('#system-form').addEventListener('submit', async event => {
 
 $('#update-form').addEventListener('submit', async event => {
   event.preventDefault();
+  // Hold on to the form: event.currentTarget is only set while the event is
+  // being dispatched, and every handler here continues after an await, by
+  // which time it reads null.
+  const form = event.currentTarget;
   const button = $('#install-update');
-  const fields = event.currentTarget.elements;
+  const fields = form.elements;
   if (!fields.bundle.files[0]) return;
   if (!fields.password.value && !fields.signature.files[0]) {
     setText('#update-message', 'Enter the appliance password, or attach a signature.');
@@ -236,7 +240,7 @@ $('#update-form').addEventListener('submit', async event => {
     const result = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(result.error || `Update failed (${response.status})`);
     setText('#update-message', `Version ${result.update.version} is staged in slot ${result.update.target_slot.toUpperCase()}. Reboot to activate it.`);
-    event.currentTarget.reset();
+    form.reset();
     await loadUpdateStatus();
   } catch (error) {
     setText('#update-message', error.message);
@@ -244,13 +248,14 @@ $('#update-form').addEventListener('submit', async event => {
 });
 
 $('#rollback-update').addEventListener('click', async event => {
+  const button = event.currentTarget;
   if (!window.confirm('Select the previous system slot for the next boot? Persistent configuration is kept.')) return;
-  event.currentTarget.disabled = true;
+  button.disabled = true;
   try {
     const result = await request('/api/update/rollback', {method: 'POST'});
     setText('#update-message', `Slot ${result.target_slot.toUpperCase()} is selected. Reboot to switch.`);
   } catch (error) { setText('#update-message', error.message); }
-  finally { event.currentTarget.disabled = false; }
+  finally { button.disabled = false; }
 });
 
 function selectKeyOption(value) {
@@ -300,14 +305,15 @@ $('#download-key').addEventListener('click', async event => {
 });
 
 $('#show-key').addEventListener('click', async event => {
-  event.currentTarget.disabled = true;
+  const button = event.currentTarget;
+  button.disabled = true;
   try {
     $('#key-text').value = await fetchPrivateKey();
     $('#key-text-field').hidden = false;
     $('#key-text').select();
     generatedKeyDownloaded = true;
   } catch (error) { setText('#setup-message', error.message); }
-  finally { event.currentTarget.disabled = false; }
+  finally { button.disabled = false; }
 });
 
 $('#setup-form').addEventListener('submit', async event => {
