@@ -245,14 +245,16 @@ loaded with `kexec -l`, and started. From there:
 | Recovery mode, disk untouched | `--status` on the device reports `/dev/mmcblk0 mounted=no` |
 | `--test` leaves no trace | disk byte-identical before and after (QEMU) |
 | Refuses to write a mounted disk | attempt rejected with an explanation |
-| Streaming write | 962 MiB at 13 MB/s onto a blank disk |
+| Streaming write | 962 MiB at 13 MB/s onto a blank disk (QEMU) |
 | Read-back verification | checksum matched `SHA256SUMS` exactly |
 | The written disk boots | comes up in first-boot setup with its own AP SSID |
 | Privileged half on the appliance | `doas` rule exercised on real hardware |
+| **Permanent install** | **Z83F eMMC: 1 008 730 112 bytes written in 31 min 46 s (517 KB/s over the setup AP), read back, checksum matched, rebooted** |
 
-The orchestration of `--install` as a single command — confirm, kexec, wait,
-select, write, verify, reboot — has not yet run end to end on hardware; each
-of its steps has.
+The install on real hardware ran as `--resume` against a recovery system that
+was already up. Two earlier attempts over the same access point aborted
+mid-transfer — both times because the client machine roamed back to a known
+network, and both times before the reboot, exactly as intended.
 
 ### Before you install permanently
 
