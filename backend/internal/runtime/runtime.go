@@ -2,7 +2,9 @@ package runtime
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -213,6 +215,58 @@ func (m *Manager) InitData() error {
 // It is documented, identical on every image, and therefore a convenience
 // rather than a secret; the setup wizard offers to replace it.
 const DefaultPassword = "laserbridge"
+
+// DefaultPasswordHash is what prepare-rootfs.sh writes into the shipped
+// account database. Recognising it is how the appliance can tell that nobody
+// has chosen a password yet, which gates the operations that trust one.
+const DefaultPasswordHash = "$6$LaserBridgeOS$5w7ZyIhzoG.NAVmvorgxpRKC.XGg6qvMpguJYnLjUmnnR6l/4K22zqUDEJzxDLz70DhXx89G6igxNYJLXeczQ0"
+
+// StoredPasswordHash returns the crypt hash of the laserbridge account.
+func (m *Manager) StoredPasswordHash() (string, error) {
+	data, err := os.ReadFile(m.DataPath("shadow"))
+	if err != nil {
+		return "", fmt.Errorf("read account database: %w", err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Split(line, ":")
+		if len(fields) >= 2 && fields[0] == "laserbridge" {
+			return fields[1], nil
+		}
+	}
+	return "", errors.New("no laserbridge entry in the account database")
+}
+
+// PasswordIsDefault reports whether the account still carries the password
+// every image ships with.
+func (m *Manager) PasswordIsDefault() bool {
+	hash, err := m.StoredPasswordHash()
+	return err == nil && hash == DefaultPasswordHash
+}
+
+// VerifyPassword checks a candidate against the stored hash by recomputing it
+// with the same salt. The comparison is constant time so a caller cannot
+// learn the hash one byte at a time.
+func (m *Manager) VerifyPassword(candidate string) (bool, error) {
+	stored, err := m.StoredPasswordHash()
+	if err != nil {
+		return false, err
+	}
+	// $<id>$<salt>$<hash>
+	parts := strings.Split(stored, "$")
+	if len(parts) != 4 || parts[1] != "6" {
+		return false, errors.New("stored password is not in a supported format")
+	}
+	runner, ok := m.Run.(StdinRunner)
+	if !ok || m.Run == nil {
+		return false, errors.New("cannot verify a password without a command runner")
+	}
+	out, err := runner.RunWithInput(candidate+"\n", "cryptpw", "-m", "sha512", "-S", parts[2], "-P", "0")
+	if err != nil {
+		return false, fmt.Errorf("hash password: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	computed := strings.TrimSpace(string(out))
+	return subtle.ConstantTimeCompare([]byte(computed), []byte(stored)) == 1, nil
+}
 
 // ShadowTemplate is the account database shipped in the image. The first boot
 // copies it to DataPath("shadow"), which /etc/shadow points at.

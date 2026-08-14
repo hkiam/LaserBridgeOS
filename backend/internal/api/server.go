@@ -56,6 +56,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/config", s.mutation(s.putConfig))
 	mux.HandleFunc("POST /api/services/{service}/{action}", s.mutation(s.serviceAction))
 	mux.HandleFunc("POST /api/system/reboot", s.mutation(s.reboot))
+	mux.HandleFunc("PUT /api/system/password", s.mutation(s.changePassword))
 	mux.HandleFunc("GET /api/logs", s.logs)
 	for _, path := range []string{"/generate_204", "/hotspot-detect.html", "/connecttest.txt", "/ncsi.txt"} {
 		mux.HandleFunc("GET "+path, func(w http.ResponseWriter, r *http.Request) {

@@ -168,15 +168,26 @@ login is disabled and empty passwords are rejected regardless. See ADR 0006.
 ## A/B system updates
 
 `make image` also creates an update bundle for the built version. Updates are
-deliberately local and owner-authorized: sign the exact `.lbu` file with an
-SSH key whose public half is installed for the appliance, then upload both
-files on the System page.
+deliberately local and owner-authorized, in one of two ways.
+
+**With the appliance password.** Upload the `.lbu` on the System page and
+enter the password. Nothing else is needed — this is the path for an
+appliance set up without a key file. The shipped default password is refused
+for this on purpose; choose your own first, in the setup wizard or on the
+System page.
+
+**With a signature.** Sign the exact `.lbu` with an SSH key whose public half
+is installed on the appliance, then upload bundle and signature together:
 
 ```sh
 scripts/sign-update.sh \
   dist/LaserBridgeOS-x86_64-0.1.0.lbu \
   laserbridge_ed25519
 ```
+
+A signature proves the bundle came from the key holder; a password only
+proves the uploader knew it. Prefer signatures where the network is not
+entirely yours. See ADR 0007.
 
 The appliance verifies the OpenSSH signature and every payload checksum,
 writes only the inactive root slot, and changes the next boot slot last. The
@@ -254,9 +265,13 @@ choose a new SSH password when the wizard offers it. The setup AP is disabled
 after successful onboarding, and the generated private SSH key is then removed
 from the appliance.
 
-Note that the WebUI itself has no authentication at all, by design for a
-trusted local network. Anyone who can reach port 80 can reconfigure the
-appliance regardless of how SSH is secured.
+The WebUI has no login. Anyone who can reach port 80 can reconfigure the
+appliance, restart services, or reboot it. Two operations are exceptions
+because they can replace the running system: installing an update and
+changing the appliance password both require that password, and the shipped
+default is not accepted for either (ADR 0007). It travels in clear text over
+HTTP, like everything else this interface handles, which is only acceptable
+on a network you control.
 
 LaserBridgeOS is intended for a trusted local network. Do not forward the WebUI,
 SSH, GRBL port 23, or camera port 8080 from an Internet-facing router. The MVP

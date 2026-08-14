@@ -59,10 +59,13 @@ type Status struct {
 	StagedVersion  string `json:"staged_version,omitempty"`
 	StagedSlot     string `json:"staged_slot,omitempty"`
 	RebootRequired bool   `json:"reboot_required"`
-	// SignedUpdatesRequired is constant: the appliance has no unsigned
-	// install path. It is reported so the web interface can state the
-	// requirement instead of hard-coding it.
-	SignedUpdatesRequired bool `json:"signed_updates_required"`
+	// SignatureAccepted is constant: a detached signature from an authorized
+	// key always authorises an update.
+	SignatureAccepted bool `json:"signature_accepted"`
+	// PasswordAccepted and DefaultPasswordInUse are filled in by the API,
+	// which is the layer that knows about the account database.
+	PasswordAccepted     bool `json:"password_accepted"`
+	DefaultPasswordInUse bool `json:"default_password_in_use"`
 }
 
 type SignatureVerifier interface {
@@ -132,24 +135,33 @@ type Manager struct {
 	mu                 sync.Mutex
 }
 
+// Install writes a verified bundle into the inactive slot.
+//
+// An empty signaturePath means the caller has already established that this
+// update is authorised - the API accepts the appliance password as an
+// alternative, because an appliance set up without a key file has no private
+// key to sign with. The bundle's own integrity is checked either way: the
+// manifest digests and the SquashFS magic are never skipped.
 func (m *Manager) Install(bundlePath, signaturePath string) (State, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err := withinSize(bundlePath, MaxBundleSize, "update bundle"); err != nil {
 		return State{}, err
 	}
-	if err := withinSize(signaturePath, MaxSignatureSize, "update signature"); err != nil {
-		return State{}, err
-	}
 	if err := os.MkdirAll(m.runtimeDir(), 0700); err != nil {
 		return State{}, err
 	}
-	verifier := m.Verifier
-	if verifier == nil {
-		verifier = OpenSSHVerifier{}
-	}
-	if err := verifier.Verify(bundlePath, signaturePath, m.authorizedKeysPath(), m.runtimeDir()); err != nil {
-		return State{}, err
+	if signaturePath != "" {
+		if err := withinSize(signaturePath, MaxSignatureSize, "update signature"); err != nil {
+			return State{}, err
+		}
+		verifier := m.Verifier
+		if verifier == nil {
+			verifier = OpenSSHVerifier{}
+		}
+		if err := verifier.Verify(bundlePath, signaturePath, m.authorizedKeysPath(), m.runtimeDir()); err != nil {
+			return State{}, err
+		}
 	}
 	archive, manifest, entries, err := openAndValidateBundle(bundlePath)
 	if err != nil {
@@ -212,7 +224,7 @@ func withinSize(path string, limit int64, label string) error {
 
 func (m *Manager) Status() Status {
 	current := m.CurrentSlot()
-	status := Status{CurrentSlot: current, PreviousSlot: otherSlot(current), CurrentVersion: readTrimmed(m.versionPath()), SignedUpdatesRequired: true}
+	status := Status{CurrentSlot: current, PreviousSlot: otherSlot(current), CurrentVersion: readTrimmed(m.versionPath()), SignatureAccepted: true}
 	data, err := os.ReadFile(filepath.Join(m.dataDir(), "update", "state.json"))
 	if err == nil {
 		var state State

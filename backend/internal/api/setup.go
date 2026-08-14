@@ -228,6 +228,56 @@ func (s *Server) completeSetup(w http.ResponseWriter, r *http.Request) {
 	s.restartNetworkSoon()
 }
 
+type passwordRequest struct {
+	Current string `json:"current"`
+	New     string `json:"new"`
+}
+
+// changePassword replaces the appliance password.
+//
+// It insists on the current one. The web interface has no login of its own,
+// so this password is the only thing standing in front of the operations
+// that trust it - letting anyone on the network set a new one without
+// knowing the old would hand those operations away.
+func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
+	var request passwordRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if s.Runtime == nil {
+		writeError(w, http.StatusServiceUnavailable, "password changes are unavailable")
+		return
+	}
+	if err := validatePassword(request.New); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ok, err := s.Runtime.VerifyPassword(request.Current)
+	if err != nil {
+		if s.Logger != nil {
+			s.Logger.Printf("verify password: %v", err)
+		}
+		writeError(w, http.StatusInternalServerError, "could not check the current password")
+		return
+	}
+	if !ok {
+		time.Sleep(time.Second)
+		writeError(w, http.StatusForbidden, "the current password is wrong")
+		return
+	}
+	if err := s.Runtime.SetPassword(request.New); err != nil {
+		if s.Logger != nil {
+			s.Logger.Printf("set password: %v", err)
+		}
+		writeError(w, http.StatusInternalServerError, "could not set the password")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "password-changed"})
+}
+
 func (s *Server) updateWiFi(w http.ResponseWriter, r *http.Request) {
 	var request wifiRequest
 	if err := decodeJSON(w, r, &request); err != nil {

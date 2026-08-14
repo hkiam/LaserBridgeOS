@@ -139,6 +139,9 @@ async function loadUpdateStatus() {
     const badgeElement = $('#update-badge');
     badgeElement.textContent = status.reboot_required ? 'REBOOT REQUIRED' : 'READY';
     badgeElement.className = `badge ${status.reboot_required ? 'stopped' : 'running'}`;
+    setText('#update-auth-hint', status.default_password_in_use
+      ? 'This appliance still has its default password, which cannot authorise an update. Change it under System, or attach a signature below.'
+      : 'Authorises this update. Alternatively attach a signature below.');
   } catch (error) {
     setText('#update-message', error.message);
   }
@@ -191,6 +194,18 @@ $('#system-form').addEventListener('submit', async event => {
   config.ssh.password_authentication = f.password_authentication.checked;
   const wifi = {enabled: f.wifi_enabled.checked, country: f.wifi_country.value.toUpperCase(), ssid: f.wifi_ssid.value, psk: f.wifi_psk.value, hidden: f.wifi_hidden.checked};
   try {
+    // Before anything else: a rejected password should not leave half the
+    // settings applied, and it is the credential the rest now depends on.
+    if (f.new_password.value || f.current_password.value) {
+      await request('/api/system/password', {
+        method: 'PUT',
+        body: JSON.stringify({current: f.current_password.value, new: f.new_password.value})
+      });
+      f.current_password.value = '';
+      f.new_password.value = '';
+      toast('Appliance password changed');
+      await loadUpdateStatus();
+    }
     await saveConfig('System settings saved');
     await request('/api/wifi', {method: 'PUT', body: JSON.stringify(wifi)});
     Object.assign(config.wifi, wifi); delete config.wifi.psk;
@@ -203,10 +218,17 @@ $('#update-form').addEventListener('submit', async event => {
   event.preventDefault();
   const button = $('#install-update');
   const fields = event.currentTarget.elements;
-  if (!fields.bundle.files[0] || !fields.signature.files[0]) return;
+  if (!fields.bundle.files[0]) return;
+  if (!fields.password.value && !fields.signature.files[0]) {
+    setText('#update-message', 'Enter the appliance password, or attach a signature.');
+    return;
+  }
+  // The password goes first so the appliance can reject a wrong one before
+  // the whole bundle has crossed the network.
   const body = new FormData();
+  if (fields.password.value) body.append('password', fields.password.value);
   body.append('bundle', fields.bundle.files[0]);
-  body.append('signature', fields.signature.files[0]);
+  if (fields.signature.files[0]) body.append('signature', fields.signature.files[0]);
   button.disabled = true;
   setText('#update-message', 'Uploading, verifying signature, and writing the inactive slot… Do not power off.');
   try {

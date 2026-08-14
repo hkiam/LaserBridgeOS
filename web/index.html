@@ -153,6 +153,8 @@
             <label>Network mode<select name="network_mode"><option value="dhcp">DHCP</option><option value="static" disabled>Static (reserved)</option></select><small>Static activation is reserved for a later network migration workflow.</small></label>
             <label class="toggle"><input name="ssh_enabled" type="checkbox"><span>Enable SSH</span></label>
             <label class="toggle"><input name="password_authentication" type="checkbox"><span>Allow SSH password authentication</span></label>
+            <label>Current appliance password<input name="current_password" type="password" autocomplete="current-password"></label>
+            <label>New appliance password<input name="new_password" type="password" minlength="8" maxlength="128" autocomplete="new-password"><small>Fill both to change it. Also authorises system updates.</small></label>
             <label class="toggle"><input name="wifi_enabled" type="checkbox"><span>Enable Wi-Fi client</span></label>
             <label>Wi-Fi country<input name="wifi_country" maxlength="2" pattern="[A-Za-z]{2}" required></label>
             <label class="wide">Wi-Fi network (SSID)<span class="input-action"><input name="wifi_ssid" list="wifi-networks" maxlength="32" autocomplete="off"><button type="button" class="button wifi-scan">Scan</button></span></label>
@@ -173,7 +175,8 @@
           <form id="update-form">
             <div class="form-grid">
               <label class="wide">Update bundle (.lbu)<input name="bundle" type="file" accept=".lbu,application/zip" required></label>
-              <label class="wide">Detached OpenSSH signature (.sig)<input name="signature" type="file" accept=".sig" required></label>
+              <label class="wide">Appliance password<input name="password" type="password" autocomplete="current-password"><small id="update-auth-hint">Authorises this update. Alternatively attach a signature below.</small></label>
+              <label class="wide">Detached OpenSSH signature (.sig), optional<input name="signature" type="file" accept=".sig"></label>
             </div>
             <div class="actions"><button type="submit" class="button primary" id="install-update">Verify and stage update</button><button type="button" class="button" id="rollback-update">Boot previous slot next</button></div>
             <p class="muted" id="update-message" aria-live="polite">Persistent configuration under <code>/data</code> is preserved.</p>
