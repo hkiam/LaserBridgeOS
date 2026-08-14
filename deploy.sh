@@ -506,8 +506,23 @@ confirm_install() {
 
 EOF
 	[ "$ASSUME_YES" = "yes" ] && { info "Proceeding (--yes)"; return 0; }
-	printf '  Type the target disk (%s) to continue: ' "$CHOSEN_DISK"
-	read -r answer </dev/tty
+
+	# Ask on the terminal rather than on stdin, which may be carrying piped
+	# input. Not every context has a controlling terminal though - a command
+	# run from an editor or an agent typically has none - so fall back to
+	# stdin when that is a terminal, and refuse to guess when neither is.
+	if { exec 3<>/dev/tty; } 2>/dev/null; then
+		printf '  Type the target disk (%s) to continue: ' "$CHOSEN_DISK" >&3
+		read -r answer <&3
+		exec 3>&-
+	elif [ -t 0 ]; then
+		printf '  Type the target disk (%s) to continue: ' "$CHOSEN_DISK"
+		read -r answer
+	else
+		die "no terminal available to confirm on.
+      Re-run this from an interactive shell, or pass --yes if the summary
+      above is what you intend. --yes is the only confirmation there is."
+	fi
 	[ "$answer" = "$CHOSEN_DISK" ] || die "aborted"
 }
 
