@@ -89,6 +89,107 @@ func TestFirstBootSetupInstallsKeyAndWiFi(t *testing.T) {
 	}
 }
 
+type passwordRunner struct {
+	inputs []string
+	calls  []string
+}
+
+func (r *passwordRunner) Run(name string, args ...string) ([]byte, error) {
+	r.calls = append(r.calls, name)
+	return nil, nil
+}
+
+func (r *passwordRunner) RunWithInput(input, name string, args ...string) ([]byte, error) {
+	r.inputs = append(r.inputs, input)
+	r.calls = append(r.calls, name)
+	if name == "cryptpw" {
+		return []byte("$6$fakesalt$fakehashvalue\n"), nil
+	}
+	return nil, nil
+}
+
+func TestSetupWithPasswordNeedsNoKeyFile(t *testing.T) {
+	dir := t.TempDir()
+	dataDir := filepath.Join(dir, "data")
+	store := config.NewStore(filepath.Join(dataDir, "config.yaml"))
+	if _, err := store.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	runner := &passwordRunner{}
+	manager := &lbruntime.Manager{Store: store, Dir: filepath.Join(dir, "run"), DataDir: dataDir, Run: runner}
+	handler := (&Server{Store: store, Runtime: manager, Runner: runner}).Handler()
+
+	// A key that a previous step authorized must survive a password-only setup.
+	existing := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEXISTING earlier@key"
+	if err := os.MkdirAll(filepath.Join(dataDir, "ssh"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "ssh", "authorized_keys"), []byte(existing+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// /etc/shadow is a symlink into /data on the appliance; the account
+	// database has to be there for a password change to land anywhere.
+	shadow := filepath.Join(dataDir, "shadow")
+	if err := os.WriteFile(shadow, []byte("root:!::0:::::\nlaserbridge:$6$old$hash:20000:0:99999:7:::\n"), 0640); err != nil {
+		t.Fatal(err)
+	}
+
+	cookie, token := csrf(t, handler)
+	body, _ := json.Marshal(setupRequest{
+		Hostname: "workshop-laser", SSID: "Workshop WiFi", PSK: "safe-password",
+		Country: "de", Password: "workshop-secret",
+	})
+	request := httptest.NewRequest(http.MethodPost, "/api/setup/complete", bytes.NewReader(body))
+	request.Header.Set("X-CSRF-Token", token)
+	request.AddCookie(cookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+	}
+
+	// The password must reach the hashing tool on stdin, never as an argument
+	// where the target's process list would expose it.
+	if len(runner.inputs) != 1 || runner.inputs[0] != "workshop-secret\n" {
+		t.Fatalf("password was not passed on stdin: %q", runner.inputs)
+	}
+	updated, err := os.ReadFile(shadow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(updated, []byte("laserbridge:$6$fakesalt$fakehashvalue:")) {
+		t.Fatalf("shadow entry not updated:\n%s", updated)
+	}
+	if !bytes.Contains(updated, []byte("root:!::")) {
+		t.Fatalf("shadow lost its other entries:\n%s", updated)
+	}
+	authorized, err := os.ReadFile(filepath.Join(dataDir, "ssh", "authorized_keys"))
+	if err != nil || string(authorized) != existing+"\n" {
+		t.Fatalf("authorized_keys changed during a password-only setup: %q, %v", authorized, err)
+	}
+	cfg, _ := store.Load()
+	if !cfg.System.SetupComplete || !cfg.SSH.PasswordAuthentication {
+		t.Fatalf("unexpected config after setup: %#v", cfg.System)
+	}
+}
+
+func TestSetupRejectsShortPassword(t *testing.T) {
+	handler, _, _ := setupTestServer(t)
+	cookie, token := csrf(t, handler)
+	body, _ := json.Marshal(setupRequest{
+		Hostname: "workshop-laser", SSID: "Workshop WiFi", PSK: "safe-password",
+		Country: "de", Password: "short",
+	})
+	request := httptest.NewRequest(http.MethodPost, "/api/setup/complete", bytes.NewReader(body))
+	request.Header.Set("X-CSRF-Token", token)
+	request.AddCookie(cookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422: %s", response.Code, response.Body.String())
+	}
+}
+
 func TestSetupKeepsTheDeploymentKeyOfARAMSession(t *testing.T) {
 	handler, _, dataDir := setupTestServer(t)
 	setupDir := filepath.Join(dataDir, "setup")

@@ -132,23 +132,38 @@ sudo dd if=dist/LaserBridgeOS-x86_64.img of=/dev/sdX bs=4M conv=fsync status=pro
 3. Open `http://10.42.0.1`, or `http://laserbridge.local` over Ethernet.
 4. Scan for a target network or enter its SSID manually, then enter the
    hostname and WPA2 Wi-Fi credentials.
-5. Download the unique generated SSH key, or install an existing public key.
+5. Choose a new SSH password, or download the generated key, or paste an
+   existing public key.
 6. Finish setup, reconnect the computer to the target network, and open
    `http://laserbridge.local`.
 
 After setup, connect with:
 
 ```text
-ssh -i laserbridge_ed25519 laserbridge@laserbridge.local
+ssh laserbridge@laserbridge.local
 http://laserbridge.local
 tcp://laserbridge.local:23
 http://laserbridge.local:8080
 ```
 
-The `laserbridge` account has no valid password by default. The setup wizard
-installs either the device-generated key or an existing public key. There is
-no shared default private key. Root SSH login and SSH password authentication
-are disabled by default.
+> **Note on the captive-portal window.** macOS and iOS open a small
+> stripped-down window when you join the setup hotspot. It works for the
+> wizard but **cannot save downloads**, so the key download appears to do
+> nothing there. The wizard therefore also shows the key as copyable text.
+> For the full experience open `http://10.42.0.1` in a normal browser.
+
+### SSH access
+
+The `laserbridge` account ships with the password **`laserbridge`** so the
+appliance is reachable straight away, without a key file. It is the same on
+every image and is therefore a convenience, not a secret — the setup wizard
+asks for a new one.
+
+Key authentication works alongside it and stays available: the wizard can
+install the device-generated key or your own public key, and there is no
+shared default private key. On a network you do not fully trust, install a key
+and switch **SSH password authentication** off on the System page. Root SSH
+login is disabled and empty passwords are rejected regardless. See ADR 0006.
 
 ## A/B system updates
 
@@ -230,11 +245,18 @@ boot cost for sporadic boot failures.
 
 ## Security notes
 
-The temporary first-boot password `laserbridge-setup` is intentionally known
-and exists for convenient local provisioning. Complete setup promptly in a
-physically trusted environment. The setup AP is disabled after successful
-onboarding, and the generated private SSH key is then removed from the
-appliance.
+Two passwords are intentionally known and shared by every image: the
+first-boot hotspot password `laserbridge-setup`, and the SSH password
+`laserbridge` for the appliance account. Both exist for convenient local
+provisioning of a device on an isolated workshop network, and both should be
+dealt with promptly: complete setup in a physically trusted environment, and
+choose a new SSH password when the wizard offers it. The setup AP is disabled
+after successful onboarding, and the generated private SSH key is then removed
+from the appliance.
+
+Note that the WebUI itself has no authentication at all, by design for a
+trusted local network. Anyone who can reach port 80 can reconfigure the
+appliance regardless of how SSH is secured.
 
 LaserBridgeOS is intended for a trusted local network. Do not forward the WebUI,
 SSH, GRBL port 23, or camera port 8080 from an Internet-facing router. The MVP

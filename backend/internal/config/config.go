@@ -74,7 +74,10 @@ func Default() Config {
 			Device: "/dev/video0", Format: "MJPEG", Resolution: "1280x720",
 			FPS: 30, Port: 8080, Quality: 80,
 		},
-		SSH:     SSH{Enabled: true, PasswordAuthentication: false},
+		// Password login is on by default: this appliance sits on an isolated
+		// workshop network and is meant to be reachable without a key file
+		// (ADR 0006). Key authentication stays available alongside it.
+		SSH:     SSH{Enabled: true, PasswordAuthentication: true},
 		Network: Network{Mode: "dhcp"},
 		WiFi:    WiFi{Enabled: false, Country: "DE"},
 	}

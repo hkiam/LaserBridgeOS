@@ -25,6 +25,34 @@ type setupRequest struct {
 	Hidden          bool   `json:"hidden"`
 	UseGeneratedKey bool   `json:"use_generated_key"`
 	PublicKey       string `json:"public_key"`
+	// Password replaces the shipped default. Empty means keep whatever is
+	// currently set, which on a fresh appliance is the documented default.
+	Password string `json:"password"`
+}
+
+func defaultPasswordIfUnchanged(cfg config.Config) string {
+	if cfg.System.SetupComplete {
+		return ""
+	}
+	return runtime.DefaultPassword
+}
+
+// MinPasswordLength is deliberately modest. The appliance lives on an
+// isolated workshop network and its own web interface has no login at all,
+// so demanding a long passphrase here would buy nothing and cost usability.
+const MinPasswordLength = 8
+
+func validatePassword(value string) error {
+	if len(value) < MinPasswordLength {
+		return fmt.Errorf("password must be at least %d characters", MinPasswordLength)
+	}
+	if len(value) > 128 {
+		return errors.New("password must be at most 128 characters")
+	}
+	if strings.ContainsAny(value, "\n\r\x00:") {
+		return errors.New("password must not contain colons or line breaks")
+	}
+	return nil
 }
 
 type wifiRequest struct {
@@ -57,6 +85,11 @@ func (s *Server) setupStatus(w http.ResponseWriter, _ *http.Request) {
 		"ssh_user":                "laserbridge",
 		"hostname":                cfg.System.Hostname,
 		"country":                 cfg.WiFi.Country,
+		"password_login":          cfg.SSH.PasswordAuthentication,
+		"min_password_length":     MinPasswordLength,
+		// Only disclosed while the appliance is still unconfigured, and only
+		// because it is printed in the README anyway.
+		"default_password": defaultPasswordIfUnchanged(cfg),
 	})
 }
 
@@ -100,10 +133,12 @@ func (s *Server) completeSetup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "initial setup is already complete")
 		return
 	}
-	if request.UseGeneratedKey == (strings.TrimSpace(request.PublicKey) != "") {
-		writeError(w, http.StatusUnprocessableEntity, "choose exactly one SSH key option")
+	if request.UseGeneratedKey && strings.TrimSpace(request.PublicKey) != "" {
+		writeError(w, http.StatusUnprocessableEntity, "choose one SSH key option, not both")
 		return
 	}
+	// An SSH key is optional. Password login is enabled by default, so a
+	// setup that only changes the password is a complete and valid setup.
 	publicKey := strings.TrimSpace(request.PublicKey)
 	if request.UseGeneratedKey {
 		data, readErr := os.ReadFile(s.dataPath("setup", "laserbridge_ed25519.pub"))
@@ -113,8 +148,21 @@ func (s *Server) completeSetup(w http.ResponseWriter, r *http.Request) {
 		}
 		publicKey = strings.TrimSpace(string(data))
 	}
-	if err := validatePublicKey(publicKey); err != nil {
-		writeError(w, http.StatusUnprocessableEntity, err.Error())
+	if publicKey != "" {
+		if err := validatePublicKey(publicKey); err != nil {
+			writeError(w, http.StatusUnprocessableEntity, err.Error())
+			return
+		}
+	}
+	if request.Password != "" {
+		if err := validatePassword(request.Password); err != nil {
+			writeError(w, http.StatusUnprocessableEntity, err.Error())
+			return
+		}
+	}
+	if publicKey == "" && request.Password == "" && !previous.SSH.PasswordAuthentication {
+		writeError(w, http.StatusUnprocessableEntity,
+			"set a password or an SSH key, otherwise nothing could log in")
 		return
 	}
 
@@ -126,11 +174,30 @@ func (s *Server) completeSetup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
+	// The password is changed first: it is the one step that cannot be undone
+	// afterwards, so failing here leaves the appliance exactly as it was.
+	if request.Password != "" {
+		if s.Runtime == nil {
+			writeError(w, http.StatusServiceUnavailable, "password changes are unavailable")
+			return
+		}
+		if err := s.Runtime.SetPassword(request.Password); err != nil {
+			if s.Logger != nil {
+				s.Logger.Printf("set password: %v", err)
+			}
+			writeError(w, http.StatusInternalServerError, "could not set the password")
+			return
+		}
+	}
 	authorizedPath := s.dataPath("ssh", "authorized_keys")
 	restoreAuthorized := authorizedRestorer(authorizedPath)
-	if err := atomicfile.Write(authorizedPath, authorizedKeys(publicKey), 0644); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not install SSH key")
-		return
+	// Only touch authorized_keys when a key was actually chosen; a
+	// password-only setup must not discard the keys already installed.
+	if publicKey != "" {
+		if err := atomicfile.Write(authorizedPath, authorizedKeys(publicKey), 0644); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not install SSH key")
+			return
+		}
 	}
 	if err := s.Store.Save(next); err != nil {
 		restoreAuthorized()
@@ -146,11 +213,17 @@ func (s *Server) completeSetup(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The generated private key is only worth keeping while it is the way in.
+	// A setup that chose a password or brought its own key never needs it.
 	_ = os.Remove(s.dataPath("setup", "laserbridge_ed25519"))
+	sshCommand := fmt.Sprintf("ssh laserbridge@%s.local", next.System.Hostname)
+	if request.UseGeneratedKey {
+		sshCommand = fmt.Sprintf("ssh -i laserbridge_ed25519 laserbridge@%s.local", next.System.Hostname)
+	}
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"status":   "switching-to-wifi",
 		"hostname": next.System.Hostname + ".local",
-		"ssh":      fmt.Sprintf("ssh -i laserbridge_ed25519 laserbridge@%s.local", next.System.Hostname),
+		"ssh":      sshCommand,
 	})
 	s.restartNetworkSoon()
 }

@@ -40,8 +40,17 @@ func TestApplyGeneratesRuntimeConfiguration(t *testing.T) {
 		}
 	}
 	sshd, _ := os.ReadFile(filepath.Join(manager.Dir, "sshd_config"))
-	if strings.Contains(string(sshd), "PermitRootLogin yes") || !strings.Contains(string(sshd), "PasswordAuthentication no") {
-		t.Fatalf("unsafe ssh defaults:\n%s", sshd)
+	// Password login is a deliberate default (ADR 0006); root login and empty
+	// passwords are not, and must stay off whatever else changes.
+	for _, forbidden := range []string{"PermitRootLogin yes", "PermitEmptyPasswords yes"} {
+		if strings.Contains(string(sshd), forbidden) {
+			t.Fatalf("unsafe ssh setting %q:\n%s", forbidden, sshd)
+		}
+	}
+	for _, required := range []string{"PasswordAuthentication yes", "AllowUsers laserbridge", "PermitRootLogin no"} {
+		if !strings.Contains(string(sshd), required) {
+			t.Fatalf("sshd config lacks %q:\n%s", required, sshd)
+		}
 	}
 	if len(runner.calls) != 1 || runner.calls[0] != "hostname laserbridge" {
 		t.Fatalf("calls = %v", runner.calls)

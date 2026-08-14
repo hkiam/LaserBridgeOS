@@ -19,10 +19,22 @@ type Runner interface {
 	Run(name string, args ...string) ([]byte, error)
 }
 
+// StdinRunner is implemented by runners that can feed a command on stdin,
+// which keeps secrets such as a password out of the process list.
+type StdinRunner interface {
+	RunWithInput(input, name string, args ...string) ([]byte, error)
+}
+
 type ExecRunner struct{}
 
 func (ExecRunner) Run(name string, args ...string) ([]byte, error) {
 	return exec.Command(name, args...).CombinedOutput()
+}
+
+func (ExecRunner) RunWithInput(input, name string, args ...string) ([]byte, error) {
+	command := exec.Command(name, args...)
+	command.Stdin = strings.NewReader(input)
+	return command.CombinedOutput()
 }
 
 type Manager struct {
@@ -131,6 +143,19 @@ func (m *Manager) InitData() error {
 	if quarantined != "" {
 		fmt.Fprintf(os.Stderr, "laserbridge: unreadable configuration moved to %s; defaults restored\n", quarantined)
 	}
+	// /etc/shadow is a symlink into /data, so the account database has to
+	// exist before anything tries to authenticate against it.
+	shadow := m.DataPath("shadow")
+	if _, err := os.Stat(shadow); os.IsNotExist(err) {
+		template, readErr := os.ReadFile(ShadowTemplate)
+		if readErr != nil {
+			return fmt.Errorf("read %s: %w", ShadowTemplate, readErr)
+		}
+		if err := atomicfile.Write(shadow, template, 0640); err != nil {
+			return err
+		}
+	}
+
 	key := m.DataPath("ssh", "ssh_host_ed25519_key")
 	if _, err := os.Stat(key); os.IsNotExist(err) {
 		if m.Run == nil {
@@ -182,6 +207,64 @@ func (m *Manager) InitData() error {
 		_, _ = m.Run.Run("chown", "-R", "laserbridge:laserbridge", m.DataPath("home", "laserbridge"))
 	}
 	return m.Apply()
+}
+
+// DefaultPassword is what the image ships with for the laserbridge account.
+// It is documented, identical on every image, and therefore a convenience
+// rather than a secret; the setup wizard offers to replace it.
+const DefaultPassword = "laserbridge"
+
+// ShadowTemplate is the account database shipped in the image. The first boot
+// copies it to DataPath("shadow"), which /etc/shadow points at.
+const ShadowTemplate = "/etc/laserbridge/shadow.default"
+
+// SetPassword changes the laserbridge account's password.
+//
+// It does not use chpasswd: that tool rewrites /etc/shadow in place, and the
+// root filesystem is read-only. The account database lives in /data instead,
+// so the new hash is written there the same way every other piece of
+// persistent state is written.
+func (m *Manager) SetPassword(password string) error {
+	runner, ok := m.Run.(StdinRunner)
+	if !ok || m.Run == nil {
+		return fmt.Errorf("cannot set a password without a command runner")
+	}
+	// The password goes to cryptpw on stdin so it never reaches the process
+	// list. Without -S the salt is random, which is what we want at runtime.
+	out, err := runner.RunWithInput(password+"\n", "cryptpw", "-m", "sha512", "-P", "0")
+	if err != nil {
+		return fmt.Errorf("hash password: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	hash := strings.TrimSpace(string(out))
+	if !strings.HasPrefix(hash, "$6$") || strings.ContainsAny(hash, ": \n") {
+		return fmt.Errorf("cryptpw returned an unusable hash")
+	}
+
+	path := m.DataPath("shadow")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read account database: %w", err)
+	}
+	updated, replaced := replaceShadowHash(string(data), "laserbridge", hash)
+	if !replaced {
+		return fmt.Errorf("no laserbridge entry in %s", path)
+	}
+	return atomicfile.Write(path, []byte(updated), 0640)
+}
+
+func replaceShadowHash(shadow, user, hash string) (string, bool) {
+	lines := strings.Split(shadow, "\n")
+	replaced := false
+	for i, line := range lines {
+		fields := strings.Split(line, ":")
+		if len(fields) < 2 || fields[0] != user {
+			continue
+		}
+		fields[1] = hash
+		lines[i] = strings.Join(fields, ":")
+		replaced = true
+	}
+	return strings.Join(lines, "\n"), replaced
 }
 
 func (m *Manager) UstreamerArgs(cfg config.Config, format string) []string {

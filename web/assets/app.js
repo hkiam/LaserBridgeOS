@@ -232,29 +232,58 @@ $('#rollback-update').addEventListener('click', async event => {
 });
 
 function selectKeyOption(value) {
-  const existing = value === 'existing';
-  $('#public-key-field').hidden = !existing;
-  $('#key-confirm').hidden = existing;
-  $('#setup-form').elements.public_key.required = existing;
+  $('#password-field').hidden = value !== 'password';
+  $('#generated-key-field').hidden = value !== 'generated';
+  $('#public-key-field').hidden = value !== 'existing';
+  $('#key-confirm').hidden = value !== 'generated';
+  $('#setup-form').elements.public_key.required = value === 'existing';
 }
 
 $$('input[name="key_option"]').forEach(input => input.addEventListener('change', event => selectKeyOption(event.target.value)));
 
+async function fetchPrivateKey() {
+  const response = await fetch('/api/setup/ssh-key', {method: 'POST', headers: {'X-CSRF-Token': csrfToken}});
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error || 'Could not read the generated SSH key');
+  }
+  return response.text();
+}
+
+// Captive-portal windows (macOS and iOS open one automatically for the setup
+// hotspot) run a stripped-down web view that silently ignores downloads. The
+// button used to report success regardless, which looked like a download that
+// had to be retried. Now the key is always shown as text as well, so it can be
+// copied wherever the download does not arrive.
 $('#download-key').addEventListener('click', async event => {
-  event.currentTarget.disabled = true;
+  const button = event.currentTarget;
+  button.disabled = true;
   try {
-    const response = await fetch('/api/setup/ssh-key', {method: 'POST', headers: {'X-CSRF-Token': csrfToken}});
-    if (!response.ok) {
-      const body = await response.json().catch(() => ({}));
-      throw new Error(body.error || 'Could not download SSH key');
-    }
-    const blobURL = URL.createObjectURL(await response.blob());
+    const key = await fetchPrivateKey();
+    $('#key-text').value = key;
+    $('#key-text-field').hidden = false;
+    const blobURL = URL.createObjectURL(new Blob([key], {type: 'application/octet-stream'}));
     const link = document.createElement('a');
-    link.href = blobURL; link.download = 'laserbridge_ed25519'; link.click();
+    link.href = blobURL;
+    link.download = 'laserbridge_ed25519';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
     setTimeout(() => URL.revokeObjectURL(blobURL), 1000);
     generatedKeyDownloaded = true;
-    $('#setup-form').elements.key_saved.checked = true;
-    event.currentTarget.textContent = 'Download again';
+    $('#setup-form').elements.key_saved.checked = false;
+    setText('#setup-message', 'If no file arrived, copy the key shown below before continuing.');
+  } catch (error) { setText('#setup-message', error.message); }
+  finally { button.disabled = false; }
+});
+
+$('#show-key').addEventListener('click', async event => {
+  event.currentTarget.disabled = true;
+  try {
+    $('#key-text').value = await fetchPrivateKey();
+    $('#key-text-field').hidden = false;
+    $('#key-text').select();
+    generatedKeyDownloaded = true;
   } catch (error) { setText('#setup-message', error.message); }
   finally { event.currentTarget.disabled = false; }
 });
@@ -263,9 +292,10 @@ $('#setup-form').addEventListener('submit', async event => {
   event.preventDefault();
   const form = event.currentTarget;
   const fields = form.elements;
-  const generated = fields.key_option.value === 'generated';
+  const option = fields.key_option.value;
+  const generated = option === 'generated';
   if (generated && (!generatedKeyDownloaded || !fields.key_saved.checked)) {
-    setText('#setup-message', 'Download and safely store the SSH private key before continuing.');
+    setText('#setup-message', 'Save the generated private key and tick the confirmation before continuing.');
     return;
   }
   const payload = {
@@ -275,7 +305,8 @@ $('#setup-form').addEventListener('submit', async event => {
     psk: fields.psk.value,
     hidden: fields.hidden.checked,
     use_generated_key: generated,
-    public_key: generated ? '' : fields.public_key.value.trim()
+    public_key: option === 'existing' ? fields.public_key.value.trim() : '',
+    password: option === 'password' ? fields.password.value : ''
   };
   $('#finish-setup').disabled = true;
   setText('#setup-message', 'Saving configuration…');
@@ -341,7 +372,19 @@ async function start() {
       const fields = $('#setup-form').elements;
       fields.hostname.value = setup.hostname;
       fields.country.value = setup.country;
+      fields.password.minLength = setup.min_password_length || 8;
+      if (setup.default_password) {
+        setText('#default-password-hint',
+          `Currently "${setup.default_password}" — the same on every image, so change it here unless the network is fully trusted.`);
+      }
       $('#download-key').disabled = !setup.generated_key_available;
+      $('#show-key').disabled = !setup.generated_key_available;
+      selectKeyOption('password');
+      // A captive-portal window cannot download files and is easy to lose.
+      if (/CaptiveNetworkSupport/i.test(navigator.userAgent)) {
+        setText('#setup-message',
+          'This is your system\'s captive-portal window. It cannot save downloads — open http://10.42.0.1 in a normal browser for the full setup.');
+      }
     }
     await Promise.all([loadConfig(), loadStatus(), loadUpdateStatus()]);
     await loadDevices();

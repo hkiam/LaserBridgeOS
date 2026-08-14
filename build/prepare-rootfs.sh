@@ -42,10 +42,31 @@ chmod 0600 "$ROOT/etc/doas.conf"
 
 chroot "$ROOT" /usr/sbin/addgroup -S laserbridge
 chroot "$ROOT" /usr/sbin/adduser -S -D -H -h /data/home/laserbridge -s /bin/ash -G laserbridge laserbridge
-# An account prefixed with ! is rejected by OpenSSH before public-key auth.
-# Use an invalid (but administratively unlocked) password field instead.
-sed -i 's/^laserbridge:[^:]*:/laserbridge:x:/' "$ROOT/etc/shadow"
+# Ship a known default password so the appliance is usable over SSH straight
+# away, without a key file. It is the same on every image and therefore only
+# a convenience, never a secret: the setup wizard asks for a new one, and the
+# device is meant for an isolated workshop network. See ADR 0006.
+#
+# The hash is precomputed with a fixed salt rather than generated here,
+# because a random salt would make the image non-reproducible. The salt adds
+# nothing anyway for a password that is printed in the README.
+#   openssl passwd -6 -salt LaserBridgeOS laserbridge
+# shellcheck disable=SC2016 # the $6$ prefix is crypt syntax, not a variable
+DEFAULT_PASSWORD_HASH='$6$LaserBridgeOS$5w7ZyIhzoG.NAVmvorgxpRKC.XGg6qvMpguJYnLjUmnnR6l/4K22zqUDEJzxDLz70DhXx89G6igxNYJLXeczQ0'
+# A | delimiter, because the hash contains slashes. sed -i keeps the file's
+# ownership and mode, which matters for /etc/shadow.
+sed -i "s|^laserbridge:[^:]*:|laserbridge:${DEFAULT_PASSWORD_HASH}:|" "$ROOT/etc/shadow"
+grep -q "^laserbridge:\\\$6\\\$" "$ROOT/etc/shadow" ||
+	{ echo "failed to set the default password" >&2; exit 1; }
 chroot "$ROOT" /usr/bin/passwd -l root >/dev/null 2>&1 || true
+
+# The root filesystem is an immutable SquashFS, so a password could never be
+# changed while the appliance runs. Keep the account database where the rest
+# of the persistent state lives and expose it at the conventional path, the
+# same trick already used for config.yaml. The image ships the initial file
+# as a template; the first boot copies it into /data.
+install -D -m 0640 "$ROOT/etc/shadow" "$ROOT/etc/laserbridge/shadow.default"
+ln -snf /data/shadow "$ROOT/etc/shadow"
 
 add_service() {
 	runlevel=$1

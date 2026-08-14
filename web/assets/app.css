@@ -113,6 +113,10 @@ label.choice { flex-direction: row; align-items: center; }
 label.choice input { width: 17px; height: 17px; accent-color: var(--accent); }
 .key-options .button { justify-self: start; margin-left: 29px; }
 .key-confirm { margin: 17px 0 0 42px; }
+.key-options > label.wide, .key-options > div:not(.actions) { margin-left: 29px; }
+.key-options .actions { margin-left: 29px; gap: 10px; }
+.setup-hint { margin: 0 0 10px; font-size: 13px; color: var(--muted); }
+#key-text { font-family: var(--mono, monospace); font-size: 12px; }
 .setup-message { min-height: 20px; margin-bottom: 0; color: var(--danger) !important; }
 .setup-done { text-align: center; }
 .setup-done a { color: var(--accent); font: 600 18px monospace; }
