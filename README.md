@@ -275,6 +275,34 @@ leaves the remainder unallocated, `/data` fixed at 289 MiB, and the GPT
 backup header where the image put it rather than at the end of the disk. It
 boots and runs; it does not use the space.
 
+### Installing a Wi-Fi-only device
+
+A RAM boot starts with an empty `/data`. It therefore has no credentials for
+your network and, because setup is not complete, raises its own first-boot
+access point instead. On a device with a network cable that is invisible; on a
+Wi-Fi-only device it means the whole installation would run over that access
+point — and `hostapd` serves it in 802.11g, which measured **196 KiB/s** on a
+Z83F. Even compressed, the image needs half an hour that way, and the client
+machine has to stay associated for all of it. macOS will not: it prefers a
+known network with internet access and roams back to it mid-transfer, which
+is what broke two attempts here.
+
+Give the appliance a fast path before writing:
+
+1. `./deploy.sh --test ./dist` — the full appliance runs from RAM, web
+   interface included.
+2. Join `LaserBridge-XXXXXX`, open `http://10.42.0.1`, and complete the setup
+   wizard with your Wi-Fi credentials. The RAM session joins your network.
+3. Reconnect your computer to that same network.
+4. `./deploy.sh --resume --install ./dist` with
+   `LASERBRIDGE_RECOVERY_SSH=laserbridge@laserbridge.local`.
+
+`--resume` writes to an appliance that is already running from RAM instead of
+kexecing into it again, which is what makes this two-step route possible.
+
+If you do install over the access point anyway, keep the client associated:
+turn off auto-join for your usual network first, and stay close to the device.
+
 ### Installing
 
 ```sh
