@@ -1,0 +1,83 @@
+# shellcheck shell=sh
+# Sourced by the patched Alpine initramfs-init before it looks at root=.
+#
+# When laserbridge.ramboot=1 is on the kernel command line the root
+# filesystem travels inside this initramfs as /root.squashfs, prepended by
+# deploy.sh as its own cpio segment. Nothing is read from the system disk,
+# which is what makes the test mode safe by construction rather than by
+# convention: there is no code path that could touch it.
+#
+# This file runs inside the initramfs. $sysroot and the ebegin/eend helpers
+# come from initramfs-init.
+#
+# shellcheck disable=SC2154  # sysroot is provided by the sourcing script
+
+laserbridge_ramboot() {
+	grep -q 'laserbridge\.ramboot=1' /proc/cmdline 2>/dev/null || return 1
+	[ -f /root.squashfs ] || {
+		echo "laserbridge.ramboot=1 but this initramfs carries no root.squashfs"
+		return 1
+	}
+
+	ebegin "Mounting LaserBridgeOS root from RAM"
+	modprobe loop 2>/dev/null
+	modprobe squashfs 2>/dev/null
+	modprobe overlay 2>/dev/null
+	mkdir -p /media/root-ro /media/root-rw
+	mount -t squashfs -o ro,loop /root.squashfs /media/root-ro || return 1
+	mount -t tmpfs -o mode=0755,rw laserbridge-ramroot /media/root-rw || return 1
+	mkdir -p /media/root-rw/work /media/root-rw/root
+	mount -t overlay -o \
+		lowerdir=/media/root-ro,upperdir=/media/root-rw/root,workdir=/media/root-rw/work \
+		overlayfs "$sysroot" || return 1
+	eend 0
+
+	# The root overlay is writable, so the appliance's own fstab can be
+	# corrected here. Replacing the data partition with a tmpfs is what keeps
+	# the system disk untouched: localmount can no longer mount it, and a
+	# stray write cannot reach it either.
+	if [ -f "$sysroot/etc/fstab" ]; then
+		sed -i 's|^LABEL=LBDATA .*|tmpfs /data tmpfs rw,nosuid,nodev,mode=0755,size=64M 0 0|' \
+			"$sysroot/etc/fstab"
+	fi
+
+	# Boot confirmation mounts the boot partition and rewrites the active slot.
+	# That is right for an installed system and wrong for every RAM boot: the
+	# running slot says nothing about what is on the disk, and the test mode
+	# promises not to write it at all.
+	rm -f "$sysroot/etc/runlevels/default/laserbridge-boot-confirm"
+
+	# Recovery serves the operator, not the laser. Dropping the appliance
+	# services keeps port 80 and the camera respawn loop out of the way.
+	if grep -q 'laserbridge\.mode=recovery' /proc/cmdline 2>/dev/null; then
+		rm -f "$sysroot/etc/runlevels/default/ser2net" \
+			"$sysroot/etc/runlevels/default/ustreamer" \
+			"$sysroot/etc/runlevels/default/laserbridge-web"
+		: > "$sysroot/etc/laserbridge/recovery"
+	fi
+
+	# deploy.sh injects the operator's public key, because a RAM boot starts
+	# with an empty /data and would otherwise have no authorized key at all -
+	# locking the operator out of the very system they just started.
+	if [ -f /laserbridge-authorized-keys ]; then
+		mkdir -p "$sysroot/etc/laserbridge"
+		cp /laserbridge-authorized-keys "$sysroot/etc/laserbridge/ramboot-authorized-keys"
+	fi
+
+	mkdir -p "$sysroot/media/root-ro" "$sysroot/media/root-rw"
+	return 0
+}
+
+if laserbridge_ramboot; then
+	# Hand over exactly like initramfs-init would after mounting a disk root.
+	cat /proc/mounts 2>/dev/null | while read -r _dev dir _type _opts; do
+		case "$dir" in
+			/ | "$sysroot" | "$sysroot"/*) continue ;;
+		esac
+		[ -d "$dir" ] || continue
+		mkdir -p "$sysroot$dir"
+		mount -o move "$dir" "$sysroot$dir" 2>/dev/null || true
+	done
+	sync
+	exec switch_root "$sysroot" /sbin/init
+fi

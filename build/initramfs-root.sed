@@ -1,4 +1,9 @@
 /# check if root=... was set/i\
+# Boot the root filesystem carried inside this initramfs, if asked to. The\
+# helper execs switch_root and never returns when it applies.\
+if [ -f /etc/laserbridge/ramboot-init ]; then\
+\t. /etc/laserbridge/ramboot-init\
+fi\
 # Locate the selected A/B partition next to the uniquely labelled ESP.\
 case "$KOPT_root" in\
 \tLASERBRIDGE_ROOT_A|LASERBRIDGE_ROOT_B)\

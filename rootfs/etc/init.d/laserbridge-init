@@ -16,5 +16,18 @@ start() {
 	touch /run/resolv.conf
 	/usr/sbin/laserbridge init || return 1
 	chown -R laserbridge:laserbridge /data/home/laserbridge
+
+	# A RAM boot has an empty /data, so the key the operator deployed with is
+	# the only one that can get back in. It is authorized in addition to the
+	# generated one rather than replacing it.
+	if [ -f /etc/laserbridge/ramboot-authorized-keys ]; then
+		cat /etc/laserbridge/ramboot-authorized-keys >> /data/ssh/authorized_keys
+		sort -u -o /data/ssh/authorized_keys /data/ssh/authorized_keys
+		chmod 0644 /data/ssh/authorized_keys
+		einfo "Authorized the deployment key for this RAM session"
+	fi
+	if [ -f /etc/laserbridge/recovery ]; then
+		einfo "Recovery mode: appliance services stay stopped"
+	fi
 	eend $?
 }

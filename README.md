@@ -170,6 +170,25 @@ successful installation. The WebUI can stage the previous slot for the next
 boot. There is deliberately no interactive boot menu or boot delay. Offline
 recovery can select a slot by editing `boot/active-slot.cfg` on `LBBOOT`.
 
+## Remote deployment and RAM testing
+
+`deploy.sh` boots a candidate image from RAM on the real device over SSH, so
+it can be judged on the hardware before anything is committed to the disk. A
+reboot returns to the installed system, unchanged; if the image is good, the
+same artefacts can be written to the disk permanently.
+
+```sh
+./deploy.sh --test ./dist        # run from RAM, system disk untouched
+./deploy.sh --install ./dist     # write that same image to the disk
+./deploy.sh --recovery           # RAM system with dd, zstd, lsblk, blkid
+```
+
+The RAM boot is verified, but Alpine's stock kernel forbids `kexec_load` and
+cannot be made to allow it at runtime, so the transition currently only works
+from a foreign Linux. `docs/deploy.md` explains the constraint and the two
+ways out; `./deploy.sh --check ./dist` reports whether a given target
+qualifies.
+
 ## Fast headless boot
 
 The appliance boots the active A/B slot directly from GRUB without displaying

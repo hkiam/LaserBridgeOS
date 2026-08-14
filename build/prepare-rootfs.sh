@@ -14,10 +14,10 @@ printf '%s\n%s\n' \
 
 apk --root "$ROOT" --arch x86_64 --initdb --no-cache \
 	--keys-dir /etc/apk/keys --repositories-file "$REPOSITORIES" add \
-	alpine-base avahi ca-certificates e2fsprogs ifupdown-ng intel-ucode \
-	dnsmasq hostapd iw libbsd libevent libjpeg-turbo linux-firmware-brcm \
-	linux-firmware-intel linux-firmware-rtlwifi linux-firmware-rtw88 \
-	linux-firmware-rtw89 linux-lts mdev-conf \
+	alpine-base avahi ca-certificates doas e2fsprogs ifupdown-ng intel-ucode \
+	dnsmasq hostapd iw kexec-tools libbsd libevent libjpeg-turbo \
+	linux-firmware-brcm linux-firmware-intel linux-firmware-rtlwifi \
+	linux-firmware-rtw88 linux-firmware-rtw89 linux-lts lsblk mdev-conf \
 	mkinitfs openssh ser2net v4l-utils wireless-regdb wpa_supplicant zstd
 
 rsync -a /workspace/rootfs/ "$ROOT/"
@@ -35,6 +35,10 @@ rm -f /image-rootfs/etc/resolv.conf
 ln -snf /run/resolv.conf "$ROOT/etc/resolv.conf"
 rm -rf /image-rootfs/var/run
 ln -snf /run "$ROOT/var/run"
+
+# doas refuses to run if its configuration is group- or world-writable.
+install -m 0755 /workspace/rootfs/usr/sbin/laserbridge-deploy "$ROOT/usr/sbin/laserbridge-deploy"
+chmod 0600 "$ROOT/etc/doas.conf"
 
 chroot "$ROOT" /usr/sbin/addgroup -S laserbridge
 chroot "$ROOT" /usr/sbin/adduser -S -D -H -h /data/home/laserbridge -s /bin/ash -G laserbridge laserbridge
@@ -67,6 +71,7 @@ sed -f /workspace/build/initramfs-root.sed \
 chmod 0755 "$ROOT/etc/laserbridge/initramfs-init"
 chroot "$ROOT" /sbin/mkinitfs -C zstd -c /etc/mkinitfs/mkinitfs.conf \
 	-i /etc/laserbridge/initramfs-init "$kernel_version"
-apk --root "$ROOT" --no-cache del zstd
+# zstd stays installed: the RAM recovery system needs it to unpack images
+# streamed from the operator's machine (ADR 0005).
 
 find "$ROOT" -exec touch -h -d "@${SOURCE_DATE_EPOCH:-1786579200}" {} +

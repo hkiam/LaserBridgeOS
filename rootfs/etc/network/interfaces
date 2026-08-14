@@ -5,4 +5,8 @@ auto eth0
 allow-hotplug eth0
 iface eth0 inet dhcp
   hostname laserbridge
-  udhcpc_opts -t 1 -T 1 -A 0
+  # ifupdown-ng already passes -b, so a lease that arrives late is still
+  # picked up. Without a pause between rounds the appliance would however
+  # send DISCOVER as fast as it can for as long as no server answers - a
+  # switch that is still running spanning-tree is enough to trigger that.
+  udhcpc_opts -t 5 -T 3 -A 5

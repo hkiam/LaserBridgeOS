@@ -1,0 +1,154 @@
+#!/bin/sh
+# Privileged half of the kexec deployment workflow.
+#
+# Everything deploy.sh needs root for lives here, as a fixed set of
+# operations, so that the doas rule can grant exactly this script instead of a
+# general root shell. ADR 0002 keeps root login disabled; ADR 0005 explains
+# why this narrow exception exists.
+set -eu
+
+STAGE=/run/laserbridge/deploy
+KEXEC=/usr/sbin/kexec
+
+usage() {
+	cat >&2 <<'EOF'
+usage: laserbridge-deploy <command> [args]
+  detect                            report architecture, memory, disks, kexec
+  stage <bytes>                     create the RAM staging area
+  receive <name>                    store stdin as a staged file
+  kexec-load <kernel> <initramfs> <cmdline>
+  kexec-exec                        boot the loaded kernel
+  write-disk <device>               stream stdin onto a block device
+  verify-disk <device> <bytes>      print the sha256 of the first bytes
+  power reboot|poweroff
+EOF
+	exit 2
+}
+
+# staged resolves a caller-supplied name to a path inside the staging area.
+# The name must be a plain file name: deploy.sh is trusted to ask for the
+# right thing, but this script runs as root on the strength of a doas rule,
+# so it does not let a path escape the directory it owns.
+staged() {
+	case "$1" in
+		*/* | '' | .* ) echo "invalid staged name: $1" >&2; exit 2 ;;
+	esac
+	echo "$STAGE/$1"
+}
+
+require_block_device() {
+	if [ ! -b "$1" ]; then
+		echo "not a block device: $1" >&2
+		exit 1
+	fi
+	if grep -q "^${1}[p0-9]* " /proc/mounts; then
+		echo "refusing to write $1: it has mounted partitions" >&2
+		echo "the appliance must run from RAM before its own disk is written" >&2
+		exit 1
+	fi
+}
+
+command=${1:-}
+[ -n "$command" ] || usage
+shift || true
+
+case "$command" in
+	detect)
+		echo "arch=$(uname -m)"
+		echo "kernel=$(uname -r)"
+		echo "memtotal_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
+		echo "memavailable_kb=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
+		echo "kexec=$([ -x "$KEXEC" ] && echo yes || echo no)"
+		echo "kexec_loaded=$(cat /sys/kernel/kexec_loaded 2>/dev/null || echo unknown)"
+		# A kernel can carry kexec support and still refuse to use it. The
+		# sysctl is one-way: once it reads 1, nothing can re-enable the
+		# syscall, so this has to be reported before anything is transferred.
+		echo "kexec_permitted=$(
+			case "$(cat /proc/sys/kernel/kexec_load_disabled 2>/dev/null || echo 0)" in
+				0) echo yes ;;
+				*) echo no ;;
+			esac)"
+		echo "ramboot=$(grep -q 'laserbridge\.ramboot=1' /proc/cmdline && echo yes || echo no)"
+		# Whole disks only: a removable USB stick is never a deployment target.
+		for path in /sys/block/*; do
+			name=$(basename "$path")
+			case "$name" in loop*|ram*|zram*|sr*|fd*|dm-*) continue ;; esac
+			[ "$(cat "$path/removable" 2>/dev/null || echo 1)" = "0" ] || continue
+			sectors=$(cat "$path/size" 2>/dev/null || echo 0)
+			[ "$sectors" -gt 0 ] || continue
+			model=unknown
+			[ -r "$path/device/model" ] && model=$(tr -d '\n' < "$path/device/model")
+			mounted=no
+			grep -q "^/dev/${name}[p0-9]* " /proc/mounts && mounted=yes
+			echo "disk=/dev/$name bytes=$((sectors * 512)) mounted=$mounted model=${model:-unknown}"
+		done
+		;;
+	diag)
+		# kexec refuses to load on some kernels; this reports why without
+		# needing a root shell on the appliance.
+		echo "kexec_load_disabled=$(cat /proc/sys/kernel/kexec_load_disabled 2>&1)"
+		echo "lockdown=$(cat /sys/kernel/security/lockdown 2>&1)"
+		echo "--- sysctl sources mentioning kexec ---"
+		grep -rl kexec_load_disabled /etc /usr/lib/sysctl.d 2>/dev/null || echo "(none)"
+		echo "--- dmesg ---"
+		dmesg 2>&1 | grep -iE "kexec|lockdown|secure boot|efi:" | head -10
+		echo "--- write probe ---"
+		if echo 0 > /proc/sys/kernel/kexec_load_disabled 2>/dev/null; then
+			echo "wrote 0 successfully -> now $(cat /proc/sys/kernel/kexec_load_disabled)"
+		else
+			echo "writing 0 rejected by the kernel"
+		fi
+		;;
+	stage)
+		bytes=${1:?stage needs a size in bytes}
+		mkdir -p "$STAGE"
+		mountpoint -q "$STAGE" 2>/dev/null || mount -t tmpfs -o "size=$bytes,mode=0700" laserbridge-deploy "$STAGE"
+		echo "$STAGE"
+		;;
+	receive)
+		target=$(staged "${1:?receive needs a name}")
+		umask 077
+		cat > "$target"
+		sync "$target" 2>/dev/null || sync
+		echo "$(wc -c < "$target") $target"
+		;;
+	kexec-load)
+		kernel=$(staged "${1:?}")
+		initramfs=$(staged "${2:?}")
+		cmdline=${3:?kexec-load needs a command line}
+		[ -x "$KEXEC" ] || { echo "kexec-tools is not installed" >&2; exit 1; }
+		"$KEXEC" -l "$kernel" --initrd="$initramfs" --command-line="$cmdline"
+		echo "kexec image loaded"
+		;;
+	kexec-exec)
+		# Stop services so filesystems are flushed; kexec skips firmware and
+		# the ordinary shutdown path, so nothing else will do it for us.
+		sync
+		"$KEXEC" -e
+		;;
+	write-disk)
+		device=${1:?write-disk needs a device}
+		require_block_device "$device"
+		dd of="$device" bs=1M conv=fsync 2>&1
+		sync
+		blockdev --flushbufs "$device" 2>/dev/null || true
+		;;
+	verify-disk)
+		device=${1:?verify-disk needs a device}
+		bytes=${2:?verify-disk needs a length}
+		require_block_device "$device"
+		blockdev --flushbufs "$device" 2>/dev/null || true
+		dd if="$device" bs=1M count=$(( (bytes + 1048575) / 1048576 )) 2>/dev/null |
+			head -c "$bytes" | sha256sum | cut -d' ' -f1
+		;;
+	power)
+		case "${1:?power needs reboot or poweroff}" in
+			reboot) sync; reboot ;;
+			poweroff) sync; poweroff ;;
+			*) usage ;;
+		esac
+		;;
+	*)
+		usage
+		;;
+esac
