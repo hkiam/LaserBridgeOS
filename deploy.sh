@@ -36,10 +36,26 @@ usage() {
 # ---------------------------------------------------------------- configuration
 
 load_env() {
+	# A variable exported for this run wins over .env. Overriding one setting
+	# once should not mean editing the file and remembering to change it back.
+	exported_ssh=${LASERBRIDGE_SSH:-}
+	exported_key=${LASERBRIDGE_SSH_KEY:-}
+	exported_port=${LASERBRIDGE_SSH_PORT:-}
+	exported_password=${LASERBRIDGE_PASSWORD:-}
+	exported_recovery=${LASERBRIDGE_RECOVERY_SSH:-}
+	exported_disk=${LASERBRIDGE_DISK:-}
+	exported_pubkey=${LASERBRIDGE_PUBKEY:-}
 	if [ -f "$SELF_DIR/.env" ]; then
 		# shellcheck disable=SC1091
 		. "$SELF_DIR/.env"
 	fi
+	[ -n "$exported_ssh" ] && LASERBRIDGE_SSH=$exported_ssh
+	[ -n "$exported_key" ] && LASERBRIDGE_SSH_KEY=$exported_key
+	[ -n "$exported_port" ] && LASERBRIDGE_SSH_PORT=$exported_port
+	[ -n "$exported_password" ] && LASERBRIDGE_PASSWORD=$exported_password
+	[ -n "$exported_recovery" ] && LASERBRIDGE_RECOVERY_SSH=$exported_recovery
+	[ -n "$exported_disk" ] && LASERBRIDGE_DISK=$exported_disk
+	[ -n "$exported_pubkey" ] && LASERBRIDGE_PUBKEY=$exported_pubkey
 	# The LIGHTBURN_* names come from the operator's existing setup and are
 	# accepted as aliases so one .env can serve both.
 	SSH_TARGET=${LASERBRIDGE_SSH:-${LIGHTBURN_SSH:-}}
@@ -57,12 +73,18 @@ load_env() {
 }
 
 SSH_CMD="ssh"
+SSH_KEEPALIVE="-o ServerAliveInterval=5 -o ServerAliveCountMax=3"
 
 set_ssh_options() {
 	# A RAM boot generates a fresh host key every time, so recovery sessions
 	# would otherwise trip the known-hosts check on every single deployment.
 	SSH_OPTS="-o ConnectTimeout=10 -o StrictHostKeyChecking=no"
 	SSH_OPTS="$SSH_OPTS -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+	# kexec tears the connection down without closing it, so the client would
+	# otherwise sit on a dead socket until the kernel's TCP timeout - tens of
+	# minutes. Keepalives make it notice in seconds. ConnectTimeout does not
+	# help here: it only covers establishing the connection.
+	SSH_OPTS="$SSH_OPTS $SSH_KEEPALIVE"
 	[ -n "$SSH_KEY" ] && SSH_OPTS="$SSH_OPTS -i $SSH_KEY"
 	[ -n "$SSH_PORT" ] && SSH_OPTS="$SSH_OPTS -p $SSH_PORT"
 
@@ -424,7 +446,7 @@ switch_to_recovery_ssh() {
 	SSH_OPTS="-o ConnectTimeout=10 -o StrictHostKeyChecking=no"
 	SSH_OPTS="$SSH_OPTS -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
 	SSH_OPTS="$SSH_OPTS -o PreferredAuthentications=publickey -o BatchMode=yes"
-	SSH_OPTS="$SSH_OPTS -i $(operator_private_key)"
+	SSH_OPTS="$SSH_OPTS $SSH_KEEPALIVE -i $(operator_private_key)"
 	[ -n "$SSH_PORT" ] && SSH_OPTS="$SSH_OPTS -p $SSH_PORT"
 	return 0
 }
