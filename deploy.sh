@@ -7,6 +7,9 @@
 #   ./deploy.sh --status                 report what the target is running
 #   ./deploy.sh --check    <image-dir>   verify prerequisites, change nothing
 #
+#   --resume  write to an appliance that is already running from RAM, instead
+#             of kexecing into it first. Needs LASERBRIDGE_RECOVERY_SSH.
+#
 # See docs/deploy.md and ADR 0005.
 set -eu
 
@@ -20,6 +23,7 @@ IMAGE_DIR=""
 ASSUME_YES=no
 DRY_RUN=no
 VERIFY=yes
+RESUME=no
 
 die() { echo "deploy: $*" >&2; exit 1; }
 info() { echo "==> $*"; }
@@ -29,7 +33,7 @@ cleanup() { [ -n "$WORK" ] && [ -d "$WORK" ] && rm -rf "$WORK"; }
 trap cleanup EXIT INT TERM
 
 usage() {
-	sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
+	sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
 	exit 2
 }
 
@@ -358,13 +362,21 @@ run_checks() {
 		fi
 	fi
 
-	if [ "$TARGET_KEXEC" = "yes" ]; then
+	if [ "$RESUME" = "yes" ]; then
+		if [ "$TARGET_RAMBOOT" = "yes" ]; then
+			check ok "the target is already running from RAM"
+		else
+			check fail "the target is not running from RAM; --resume has nothing to resume"
+		fi
+	elif [ "$TARGET_KEXEC" = "yes" ]; then
 		check ok "kexec-tools is installed on the target"
 	else
 		check fail "kexec-tools is not installed on the target"
 	fi
 
-	if [ "$TARGET_KEXEC_PERMITTED" = "yes" ]; then
+	if [ "$RESUME" = "yes" ]; then
+		: # the kexec already happened; its prerequisites no longer matter
+	elif [ "$TARGET_KEXEC_PERMITTED" = "yes" ]; then
 		check ok "the kernel permits kexec_load"
 	else
 		check fail "the running kernel forbids kexec_load (kexec_load_disabled=1).
@@ -375,7 +387,7 @@ run_checks() {
 
 	# The RAM system holds the initramfs while the kernel unpacks it, so the
 	# image is briefly resident twice.
-	if [ -n "$IMAGE_DIR" ]; then
+	if [ -n "$IMAGE_DIR" ] && [ "$RESUME" = "no" ]; then
 		needed_kb=$(( (KEXEC_INITRAMFS_BYTES / 1024) * 2 + 262144 ))
 		if [ "$TARGET_MEM_KB" -ge "$needed_kb" ]; then
 			check ok "memory: $(human $((TARGET_MEM_KB * 1024))) total, needs about $(human $((needed_kb * 1024)))"
@@ -579,6 +591,7 @@ while [ $# -gt 0 ]; do
 			MODE=${1#--}
 			;;
 		--yes|-y) ASSUME_YES=yes ;;
+		--resume) RESUME=yes ;;
 		--dry-run) DRY_RUN=yes ;;
 		--no-verify) VERIFY=no ;;
 		-h|--help) usage ;;
@@ -602,7 +615,21 @@ if [ -n "$IMAGE_DIR" ]; then
 	find_artifacts
 	verify_checksums
 	extract_bundle
-	build_kexec_initramfs
+	# Resuming talks to a system that is already running from RAM, so no
+	# initramfs has to be built or transferred.
+	[ "$RESUME" = "yes" ] || build_kexec_initramfs
+fi
+
+# --resume picks up an appliance that is already in recovery mode. On a
+# Wi-Fi-only device that is the normal case rather than an exception: a RAM
+# boot starts with an empty /data, has no credentials for the operator's
+# network, and therefore raises its own setup access point. Point
+# LASERBRIDGE_RECOVERY_SSH at it - usually laserbridge@10.42.0.1 - and carry
+# on from there instead of kexecing a second time.
+if [ "$RESUME" = "yes" ]; then
+	[ "$MODE" = "install" ] || die "--resume only applies to --install"
+	switch_to_recovery_ssh
+	info "Resuming against the running RAM system on $CURRENT_TARGET"
 fi
 
 probe_privilege
@@ -624,11 +651,17 @@ fi
 if [ "$DRY_RUN" = "yes" ]; then
 	echo
 	echo "  Dry run - the following would happen:"
-	echo "    1. stage the RAM image on $CURRENT_TARGET"
-	echo "    2. kexec into it (mode: $MODE)"
+	step=1
+	if [ "$RESUME" = "no" ]; then
+		echo "    $step. stage the RAM image on $CURRENT_TARGET"; step=$((step + 1))
+		echo "    $step. kexec into it (mode: $MODE)"; step=$((step + 1))
+	else
+		echo "    (the target already runs from RAM; no kexec)"
+	fi
 	[ "$MODE" = "install" ] && {
-		echo "    3. stream $(basename "$DISK_IMAGE") onto $CHOSEN_DISK (DESTROYS ALL DATA)"
-		echo "    4. verify the write, then reboot"
+		echo "    $step. stream $(basename "$DISK_IMAGE") onto $CHOSEN_DISK (DESTROYS ALL DATA)"
+		step=$((step + 1))
+		echo "    $step. verify the write, then reboot"
 	}
 	echo
 	exit 0
@@ -658,12 +691,17 @@ EOF
 		;;
 	install)
 		confirm_install
-		kexec_into_ram "laserbridge.mode=recovery"
-		wait_for_recovery
-		probe_target
+		if [ "$RESUME" = "no" ]; then
+			kexec_into_ram "laserbridge.mode=recovery"
+			wait_for_recovery
+			probe_target
+			choose_disk
+		fi
+		# Checked again on the system that is about to be written, not only on
+		# the one that was asked to hand over. Writing a disk the running
+		# system lives on is the one mistake this workflow exists to avoid.
 		[ "$TARGET_RAMBOOT" = "yes" ] ||
 			die "refusing to write: the target is not running from RAM"
-		choose_disk
 		write_disk_image
 		info "Rebooting into the installed system"
 		remote power reboot >/dev/null 2>&1 || true
