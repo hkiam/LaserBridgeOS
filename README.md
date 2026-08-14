@@ -213,6 +213,90 @@ Run `./deploy.sh --check ./dist` first: it verifies every artefact, the
 architecture, the available memory and the target disk without changing
 anything.
 
+### How a deployment runs
+
+Both `--test` and `--install` start the same way. `deploy.sh` unpacks the
+`.lbu`, checks each payload against the manifest digests, and prepends
+`root.squashfs` to `initramfs-lts` as its own uncompressed cpio segment — the
+arrangement the kernel already uses for early microcode. Your public key goes
+into that segment too, because a RAM boot starts with an empty `/data` and
+would otherwise authorize nobody.
+
+That combined initramfs and the kernel are staged in a tmpfs on the target,
+loaded with `kexec -l`, and started. From there:
+
+- **`--test`** boots the full appliance from RAM. The root is an overlay with
+  the image's SquashFS read-only underneath and a tmpfs on top, and `/data`
+  is a tmpfs as well. The system disk is not merely left alone but
+  unreachable: the initramfs rewrites `/etc/fstab` in the overlay before
+  handing over, so nothing can mount it. `reboot` returns to the installed
+  system with nothing to undo.
+- **`--install`** boots the same image in recovery mode, then streams
+  `LaserBridgeOS-x86_64.img.gz` from your machine straight onto the block
+  device. The target never stores the image. Afterwards the disk is read back
+  and its SHA-256 compared against `SHA256SUMS`; only then does the appliance
+  reboot. Any failure stops before the reboot.
+
+### What is verified, and how
+
+| Step | Evidence |
+| --- | --- |
+| kexec into RAM | Z83F running Ubuntu 24.04, twice |
+| Recovery mode, disk untouched | `--status` on the device reports `/dev/mmcblk0 mounted=no` |
+| `--test` leaves no trace | disk byte-identical before and after (QEMU) |
+| Refuses to write a mounted disk | attempt rejected with an explanation |
+| Streaming write | 962 MiB at 13 MB/s onto a blank disk |
+| Read-back verification | checksum matched `SHA256SUMS` exactly |
+| The written disk boots | comes up in first-boot setup with its own AP SSID |
+| Privileged half on the appliance | `doas` rule exercised on real hardware |
+
+The orchestration of `--install` as a single command — confirm, kexec, wait,
+select, write, verify, reboot — has not yet run end to end on hardware; each
+of its steps has.
+
+### Before you install permanently
+
+`--install` erases the whole disk, `/data` included. Three consequences are
+worth weighing first, and the first one decides it on most hardware.
+
+**The appliance comes back with no network configuration.** Wi-Fi
+credentials live in `/data`. After the wipe the device boots into first-boot
+setup and raises its setup access point. With a network cable attached it is
+reachable immediately over DHCP; **without one it is only reachable on site**,
+by joining `LaserBridge-XXXXXX` from a phone or laptop. Check for an Ethernet
+port before starting — a mini PC such as the Z83F may have Wi-Fi only.
+
+**The launch pad disappears.** Whatever Linux was installed is what made
+`kexec` possible. Once LaserBridgeOS occupies the disk, the RAM test workflow
+is unavailable until the kexec blocker below is resolved.
+
+**The disk keeps the image's layout.** A 962 MiB image on a 58 GiB disk
+leaves the remainder unallocated, `/data` fixed at 289 MiB, and the GPT
+backup header where the image put it rather than at the end of the disk. It
+boots and runs; it does not use the space.
+
+### Installing
+
+```sh
+./deploy.sh --dry-run --install ./dist   # prints the plan, changes nothing
+./deploy.sh --install ./dist
+```
+
+The second command prints the target, the disk, its size and the image
+version, and requires the disk path to be typed back before it proceeds.
+`--yes` skips that prompt and should be reserved for unattended use — it
+removes the last thing standing between a typo and a wiped disk.
+
+Expect the run to take several minutes: roughly 180 MiB of initramfs cross
+the network before the kexec, then the compressed image, then a full read-back
+of the disk for verification. `deploy.sh` reports each stage. If it seems to
+stall right after `Rebooting into RAM via kexec`, the appliance is probably up
+under a different DHCP lease; it is searched for under `laserbridge.local`
+as well.
+
+After the reboot the appliance is in factory state: setup wizard pending,
+default password, no Wi-Fi.
+
 ### Open point: the kexec trigger
 
 The RAM boot itself is verified — the overlay mounts, `/data` is a tmpfs, no
@@ -323,8 +407,15 @@ computer to repair the configuration. Reflashing the image or clearing the
 entire `LBDATA` partition performs a factory reset and destroys its settings
 and keys.
 
+A device that is unreachable but still boots can also be repaired without
+opening it: `./deploy.sh --recovery` starts the RAM system over SSH, which
+brings `dd`, `zstd`, `lsblk`, `blkid`, `mount` and `sha256sum` while leaving
+the system disk unmounted. That needs a Linux on the device that permits
+`kexec`, so it does not help once LaserBridgeOS itself is installed.
+
 See [the build guide](docs/build.md), [installation guide](docs/install.md),
-and [architecture](docs/architecture.md) for details.
+[remote deployment](docs/deploy.md), and
+[architecture](docs/architecture.md) for details.
 
 ## Development
 
@@ -356,7 +447,10 @@ scope. See [MVP tasks](docs/mvp.md).
 - some adapters cannot scan while serving the setup AP; manual SSID entry
   remains available;
 - static-IP migration and automatic update discovery are not implemented;
-- update rollback is explicit; there is no automatic boot-attempt counter;
+- `deploy.sh` cannot kexec out of LaserBridgeOS itself, because Alpine's
+  kernel forbids `kexec_load`; a foreign Linux is needed as the launch pad;
+- a permanent install writes the image's 962 MiB layout and leaves the rest
+  of a larger disk unallocated; `/data` does not grow to fit;
 - one GRBL TCP client by default;
 - no G-code storage, job streaming, editor, or replacement for LightBurn;
 - no TLS termination or WAN-facing security boundary.
