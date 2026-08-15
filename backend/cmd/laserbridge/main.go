@@ -37,7 +37,7 @@ func run(args []string) error {
 	runner := lbruntime.ExecRunner{}
 	manager := &lbruntime.Manager{Store: store, Dir: runtimeDir, DataDir: dataDir, Run: runner}
 	if len(args) == 0 {
-		return errors.New("usage: laserbridge <serve|init|apply|run-ustreamer|ssh-enabled|boot-confirm|grbl-backend|grbl-status|grbl-journal>")
+		return errors.New("usage: laserbridge <serve|init|apply|run-ustreamer|ssh-enabled|boot-confirm|watchdog|grbl-backend|grbl-status|grbl-journal>")
 	}
 	switch args[0] {
 	case "init":
@@ -48,6 +48,16 @@ func run(args []string) error {
 		return manager.RunUstreamer()
 	case "boot-confirm":
 		return newUpdater(manager).ConfirmBoot()
+	case "watchdog":
+		// Runs for the life of the appliance. It is its own service rather than
+		// a goroutine in the web backend because stopping or restarting that
+		// backend would close the device, and closing the device is how a
+		// watchdog is disarmed - a routine restart would quietly remove the
+		// last thing standing between a frozen kernel and a live laser.
+		dog := &lbruntime.Watchdog{Logger: log.New(os.Stdout, "laserbridge-watchdog: ", log.LstdFlags)}
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+		return dog.Run(ctx)
 	case "grbl-status":
 		// Reads the bridge's own account of itself over its Unix socket.
 		// Nothing else may touch the serial port, so this is how the rest of
@@ -125,7 +135,10 @@ func run(args []string) error {
 			return err
 		}
 		if quarantined != "" {
-			log.Printf("laserbridge: unreadable configuration moved to %s; defaults restored", quarantined)
+			log.Printf("laserbridge: unreadable configuration moved to %s; network settings kept, the rest reset", quarantined)
+		}
+		for _, note := range store.Notes() {
+			log.Printf("laserbridge: %s", note)
 		}
 		// Without root the appliance cannot drive services, so the API is
 		// served read-only rather than reporting failures for every command.

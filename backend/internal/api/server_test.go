@@ -34,8 +34,11 @@ func testServer(t *testing.T) (http.Handler, *config.Store, *fakeRunner) {
 		t.Fatal(err)
 	}
 	runner := &fakeRunner{}
-	manager := &lbruntime.Manager{Store: store, Dir: filepath.Join(dir, "run"), DataDir: filepath.Join(dir, "data"), Run: runner}
-	return (&Server{Store: store, Runtime: manager, Runner: runner, VersionPath: filepath.Join(dir, "version")}).Handler(), store, runner
+	// One root for the whole server: nothing here may read - or write - the
+	// machine running the test.
+	root := filepath.Join(dir, "root")
+	manager := &lbruntime.Manager{Store: store, Dir: filepath.Join(dir, "run"), DataDir: filepath.Join(dir, "data"), Run: runner, Root: root}
+	return (&Server{Store: store, Runtime: manager, Runner: runner, VersionPath: filepath.Join(dir, "version"), Root: root}).Handler(), store, runner
 }
 
 func csrf(t *testing.T, handler http.Handler) (*http.Cookie, string) {

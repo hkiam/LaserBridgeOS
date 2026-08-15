@@ -208,8 +208,9 @@ scripts/sign-update.sh \
 ```
 
 A signature proves the bundle came from the key holder; a password only
-proves the uploader knew it. Prefer signatures where the network is not
-entirely yours. See ADR 0007.
+proves the uploader knew it — and sends it across the network in clear text,
+where it is also the SSH login and, through `doas`, root. Signatures are the
+better path wherever a second machine can reach this one. See ADR 0007.
 
 The appliance verifies the OpenSSH signature and every payload checksum,
 writes only the inactive root slot, and changes the next boot slot last. The
@@ -217,6 +218,24 @@ current configuration and SSH keys under `/data` are retained. Reboot after a
 successful installation. The WebUI can stage the previous slot for the next
 boot. There is deliberately no interactive boot menu or boot delay. Offline
 recovery can select a slot by editing `boot/active-slot.cfg` on `LBBOOT`.
+
+### Rolling back to an older slot
+
+`/data` is shared by both slots, so a rollback hands an older binary a
+configuration file a newer one wrote. That file is read past rather than
+refused: an unknown section, an unknown key, or a value this version cannot
+make sense of is skipped and reported, and everything else is used. What was
+skipped is named in the service log and on the System page, and the file is
+left as it is — so booting the newer slot again finds its settings where it
+left them. Saving anything from the older version's web interface does drop
+them, because it can only write what it knows.
+
+A configuration that still cannot be used is moved to `config.yaml.broken`,
+and what replaces it keeps the hostname, the Wi-Fi credentials and the network
+settings where those are usable on their own. Everything else returns to its
+default. The point is that the appliance stays where it can be found: losing
+the camera resolution is repairable through the web interface, and losing the
+network is not. See ADR 0016.
 
 ## The GRBL bridge
 
@@ -252,6 +271,14 @@ $ ssh laserbridge@laserbridge.local
 $ doas sed -i 's/backend: laserbridged/backend: ser2net/' /data/config.yaml
 $ doas rc-service laserbridged stop && doas rc-service ser2net start
 ```
+
+Falling back costs something, and the GRBL page says so plainly rather than
+just hiding the machine panel: with ser2net selected, the machine's state and
+laser output are not read, a beam left on while nothing moves is not noticed,
+a client that disappears mid-job gets no feed hold and no soft reset, and
+nothing is recorded about alarms or the line that caused them. An absence on a
+page is not a statement, and somebody who switched backends a month ago has
+nothing else left to remind them.
 
 ### What the machine is doing
 
@@ -508,6 +535,107 @@ caveat is permanent.
 real controller; everything else is covered by tests against a
 pseudo-terminal.
 
+`tests/hardware/appliance-smoke-test.sh <host>` covers the appliance around it
+— the watchdog, the panic settings, logs that survived a reboot, the USB power
+policy as the kernel actually applied it, and a configuration written by a
+newer version being readable by this one. Those exist only in a built and
+booted image, so no unit test can reach them. It reads and asks; the one check
+that stops a service has to be requested with `--stop-watchdog`.
+
+### When the appliance itself stops
+
+Each recovery mechanism here covers something specific, and all of them need
+the kernel to still be running: a bridge that exits is respawned, a bridge that
+hangs is restarted by the web backend, a slot that never boots is replaced by
+the other one after three attempts.
+
+A kernel that has stopped scheduling userspace is covered by a hardware
+watchdog. `laserbridge watchdog` holds `/dev/watchdog` open and writes to it
+every ten seconds; when the writes stop, the board resets. Coming back through
+the reboot re-enumerates USB, which toggles DTR, which soft-resets an
+Arduino-based controller — and a soft reset switches the output off whatever
+`$32` says. The kernel is also told to treat an oops as fatal and reboot ten
+seconds later (`kernel.panic_on_oops`, `kernel.panic`).
+
+The watchdog does not judge the system's health. It pets while it is being
+scheduled and asks nothing else, because a false positive here costs a reboot
+in the middle of a cut. Stopping the service writes the magic close character
+first, so a deliberate stop is not a delayed reset.
+
+Boards without a watchdog device — most virtual machines — boot with that one
+service failed and a message saying so. That is deliberate: an appliance
+without a last resort should not look like one that has it. See ADR 0017.
+
+### Reading what happened afterwards
+
+System logs are written to `/data/log/messages`, rotated at 200 KiB with two
+generations kept, and kernel messages are fed into the same file by `klogd`.
+They used to live in a RAM ring buffer, which meant they were gone at exactly
+the moment somebody wanted them: after the reboot. An out-of-memory kill, a
+kernel oops, a controller that reset the USB bus — on a headless machine those
+leave no other trace.
+
+```console
+$ ssh laserbridge@laserbridge.local
+$ tail -f /data/log/messages
+$ grep -i 'usb\|oops\|killed process' /data/log/messages*
+```
+
+The Logs page shows the same file. The GRBL journal is separate and stays
+separate: it records what the bridge saw of the machine, this records what the
+appliance carrying it was doing.
+
+### USB power saving is off
+
+The kernel may suspend a USB device that has been idle for a while and wake it
+on the next access. On a laptop that is worth doing; on a machine whose USB
+port is carrying G-code it is not. A CH340 or FTDI adapter coming out of
+suspend can swallow the first characters of the line that woke it, and GRBL
+parses lines — a dropped byte is a wrong cut, not a failed job. Some adapters
+do worse and re-enumerate, which moves `/dev/ttyUSB0` out from under the bridge
+mid-job. The power it saves on an appliance bolted to a laser and plugged into
+the wall is not worth measuring.
+
+So the appliance switches it off in three places, because no one of them is
+enough:
+
+- `usbcore.autosuspend=-1` on the kernel command line, for devices probed
+  during boot — long before `/data` is mounted and the configuration is
+  readable;
+- `options usbcore autosuspend=-1` in `/etc/modprobe.d`, carried into the
+  initramfs as well. This one exists because the command line above cannot be
+  changed by an update — it is baked into the GRUB image on the ESP — while
+  the root filesystem is replaced by every update;
+- `system.usb_autosuspend`, applied by `laserbridge apply` at every boot and
+  after every configuration change. It sets the same kernel parameter for
+  whatever is plugged in next, and walks `/sys/bus/usb/devices/*/power/` to
+  reach the adapter and camera that were probed before anyone had a say. This
+  is the only one of the three that can express a value other than "off".
+
+```yaml
+system:
+  usb_autosuspend: -1    # -1 is off; 0 to 3600 is an idle delay in seconds
+```
+
+The System page carries the same setting and shows what the kernel answers
+beside what was asked of it. The two differing means the setting did not take —
+a backend running without root cannot write `sysfs` at all — and that is worth
+seeing on the page that offers the setting.
+
+Turning it back on is a real option for a device whose driver depends on
+runtime power management, or for measuring what this appliance draws. Doing so
+while a job is running is refused unless the request repeats with `force=true`:
+the setting reaches the adapter that is carrying the job.
+
+Note for existing installations: the kernel command line lives in the GRUB
+image on the ESP, and an update bundle carries only the root filesystem, kernel
+and initramfs. An appliance updated in place therefore keeps whatever command
+line it was installed with — which is why the same default is also a module
+option and a configuration setting, both of which updates do replace. The rule
+this follows: boot policy that has to be changeable belongs where updates can
+reach it, as a sysctl where it can be one, and on the command line only as a
+default for freshly installed images.
+
 ## What fills the image
 
 An appliance this narrow producing an 800 MiB image looks wrong until you
@@ -760,9 +888,30 @@ The WebUI has no login. Anyone who can reach port 80 can reconfigure the
 appliance, restart services, or reboot it. Two operations are exceptions
 because they can replace the running system: installing an update and
 changing the appliance password both require that password, and the shipped
-default is not accepted for either (ADR 0007). It travels in clear text over
-HTTP, like everything else this interface handles, which is only acceptable
-on a network you control.
+default is not accepted for either (ADR 0007).
+
+That password is worth being precise about, because it is not only a web
+credential. It is the SSH login, and SSH leads to root through `doas`, so it
+is the whole machine — and it crosses the network in clear text over HTTP,
+like everything else this interface handles. Two consequences follow:
+
+- **Prefer the signature path for updates.** It proves the bundle came from
+  the key holder, it never puts a root credential on the wire, and it works on
+  an appliance whose password you would rather not type on a shared network.
+  The password path exists for appliances set up without a key at all.
+- **Guessing is now rate limited rather than merely slowed.** Five wrong
+  passwords are free — the operator with two passwords in their head is not
+  the threat — and after that the wait doubles from fifteen seconds to a
+  five-minute cap. Both endpoints share one counter, because they check the
+  same secret. The previous one-second sleep was not a limit: it did nothing
+  against attempts made in parallel.
+
+A challenge-response scheme would remove the clear-text exposure, and it does
+not fit here: the appliance stores a `crypt(3)` SHA-512 hash, and a browser
+cannot compute one — WebCrypto has no such primitive. Doing it properly would
+mean a second, browser-computable verifier kept in sync with the account
+password, including when it is changed over SSH. Signatures already solve the
+same problem without a new secret to keep in step.
 
 LaserBridgeOS is intended for a trusted local network. Do not forward the WebUI,
 SSH, GRBL port 23, or camera port 8080 from an Internet-facing router. The MVP

@@ -129,6 +129,18 @@
           <p class="machine-warning">The bridge can pause an unattended machine, but it depends on this appliance, the cable and the controller answering. It is not an emergency stop — use the machine's own.</p>
         </article>
 
+        <article class="card" id="ser2net-note" hidden>
+          <div class="card-head"><h2>ser2net is carrying the port</h2><span class="badge stopped">NOT WATCHED</span></div>
+          <p class="muted">ser2net moves bytes and has no opinion about them, which is exactly why it is kept as the permanent fallback (ADR 0011). It also means none of the following is happening while it is selected:</p>
+          <ul class="plain-list">
+            <li>the machine's state, position and laser output are not being read;</li>
+            <li>a laser left on while nothing moves is not noticed, and not switched off;</li>
+            <li>a client that disappears mid-job gets no feed hold and no soft reset — the machine finishes whatever is in its planner buffer;</li>
+            <li>nothing is recorded about alarms, errors or the line that caused them.</li>
+          </ul>
+          <p class="muted">Switch to laserbridged under Bridge service below to get them back. Either way, neither is an emergency stop — use the machine's own.</p>
+        </article>
+
         <article class="card" id="journal-card" hidden>
           <div class="card-head"><h2>What happened</h2><button class="button small ghost" id="journal-refresh">Refresh</button></div>
           <p class="muted journal-intro">Alarms, errors and anything the bridge did on its own — with the line that caused it. Kept across a reboot.</p>
@@ -172,10 +184,12 @@
 
       <section class="panel" id="panel-system">
         <div class="heading"><div><p class="eyebrow">LOCAL APPLIANCE</p><h1>System</h1></div></div>
+        <article class="card" id="config-warning-card" hidden><h2>Stored configuration</h2><p class="machine-note" id="config-warning"></p></article>
         <form class="card form-card config-form" id="system-form">
           <div class="form-grid">
             <label>Hostname<input name="hostname" maxlength="63" required></label>
             <label>Network mode<select name="network_mode"><option value="dhcp">DHCP</option><option value="static" disabled>Static (reserved)</option></select><small>Static activation is reserved for a later network migration workflow.</small></label>
+            <label>USB autosuspend<input name="usb_autosuspend" type="number" min="-1" max="3600" required><small>Idle seconds before the kernel may suspend a USB device. -1 switches it off, which is the default: a suspended serial adapter can swallow the first characters of the next line, and some re-enumerate under a different device name. <span id="usb-autosuspend-state" class="muted"></span></small></label>
             <label class="toggle"><input name="ssh_enabled" type="checkbox"><span>Enable SSH</span></label>
             <label class="toggle"><input name="password_authentication" type="checkbox"><span>Allow SSH password authentication</span></label>
             <label>Current appliance password<input name="current_password" type="password" autocomplete="current-password"></label>
@@ -200,7 +214,7 @@
           <form id="update-form">
             <div class="form-grid">
               <label class="wide">Update bundle (.lbu)<input name="bundle" type="file" accept=".lbu,application/zip" required></label>
-              <label class="wide">Appliance password<input name="password" type="password" autocomplete="current-password"><small id="update-auth-hint">Authorises this update. Alternatively attach a signature below.</small></label>
+              <label class="wide">Appliance password<input name="password" type="password" autocomplete="current-password"><small id="update-auth-hint">Authorises this update. Alternatively attach a signature below.</small><small>This password is also the SSH login and, through doas, root — and it crosses the network in clear text. A signature is the better path where another machine can reach this one.</small></label>
               <label class="wide">Detached OpenSSH signature (.sig), optional<input name="signature" type="file" accept=".sig"></label>
             </div>
             <div class="actions"><button type="submit" class="button primary" id="install-update">Verify and stage update</button><button type="button" class="button" id="rollback-update">Boot previous slot next</button></div>

@@ -44,6 +44,25 @@ type Manager struct {
 	Dir     string
 	DataDir string
 	Run     Runner
+	// Root is the filesystem this appliance reads the running kernel from -
+	// /sys, /proc, /dev. Empty means "/", which is the appliance itself; a test
+	// points it at a directory it built.
+	//
+	// It is one field rather than one per subsystem because the alternative was
+	// already starting: a Sysfs here, a WirelessSysfs there, and every other
+	// path a literal. The cost of that showed up the first time a test wrote
+	// USB power settings - it wrote them to the machine running the test, and
+	// only failed because a container mounts /sys read-only.
+	//
+	// DataDir stays separate. This is where the kernel keeps facts about the
+	// hardware; that is where the appliance keeps its own state, and the two
+	// are configured independently.
+	Root string
+}
+
+// Path resolves a kernel path such as "/sys/module" against Root.
+func (m *Manager) Path(parts ...string) string {
+	return filepath.Join(append([]string{m.Root}, parts...)...)
 }
 
 const SetupAPPassword = "laserbridge-setup"
@@ -130,6 +149,22 @@ Subsystem sftp internal-sftp
 			return fmt.Errorf("set hostname: %w: %s", err, strings.TrimSpace(string(out)))
 		}
 	}
+	// USB power management comes last, and is the one part of Apply that may
+	// fail without failing. Everything above writes a file this appliance owns;
+	// this writes the kernel, and there are several honest reasons it cannot -
+	// a backend started without root, a kernel built without CONFIG_PM, a
+	// container where /sys is mounted read-only. None of them is a broken
+	// configuration, and returning an error here would roll a hostname change
+	// back over a knob that was never reachable.
+	//
+	// Silence would be the other mistake, so it is said twice: on stderr, which
+	// is the service log, and in /api/status, which reports what the kernel
+	// answers next to what was asked of it. A setting that did not take is then
+	// visible on the page that offers it rather than only in a log nobody
+	// opened.
+	if err := m.ApplyUSBPolicy(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "laserbridge: %v\n", err)
+	}
 	return nil
 }
 
@@ -149,7 +184,10 @@ func (m *Manager) InitData() error {
 		return err
 	}
 	if quarantined != "" {
-		fmt.Fprintf(os.Stderr, "laserbridge: unreadable configuration moved to %s; defaults restored\n", quarantined)
+		fmt.Fprintf(os.Stderr, "laserbridge: unreadable configuration moved to %s; network settings kept, the rest reset\n", quarantined)
+	}
+	for _, note := range m.Store.Notes() {
+		fmt.Fprintf(os.Stderr, "laserbridge: %s\n", note)
 	}
 	// /etc/shadow is a symlink into /data, so the account database has to
 	// exist before anything tries to authenticate against it.

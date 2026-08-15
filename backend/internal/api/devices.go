@@ -50,10 +50,7 @@ func (s *Server) wifiScan(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) wirelessInterface() string {
-	root := s.WirelessSysfs
-	if root == "" {
-		root = "/sys/class/net"
-	}
+	root := s.system().path("/sys/class/net")
 	entries, _ := os.ReadDir(root)
 	for _, entry := range entries {
 		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
@@ -156,15 +153,17 @@ type videoDevice struct {
 }
 
 func (s *Server) devices(w http.ResponseWriter, _ *http.Request) {
-	serial := discover([]string{"/dev/serial/by-id/*", "/dev/ttyUSB*", "/dev/ttyACM*"})
-	video := discover([]string{"/dev/v4l/by-id/*", "/dev/video*"})
+	sys := s.system()
+	serial := sys.discover([]string{"/dev/serial/by-id/*", "/dev/ttyUSB*", "/dev/ttyACM*"})
+	video := sys.discover([]string{"/dev/v4l/by-id/*", "/dev/video*"})
 	serialResult := make([]serialDevice, 0, len(serial))
 	for _, path := range serial {
 		serialResult = append(serialResult, serialDevice{Path: path, Stable: strings.Contains(path, "/by-id/")})
 	}
 	videoResult := make([]videoDevice, 0, len(video))
 	for _, path := range video {
-		name := readTrimmed(filepath.Join("/sys/class/video4linux", filepath.Base(resolve(path)), "name"))
+		// Resolved where it was found, named where it will be used.
+		name := readTrimmed(sys.path("/sys/class/video4linux", filepath.Base(resolve(sys.path(path))), "name"))
 		capabilities := ""
 		if s.Runner != nil {
 			out, err := s.Runner.Run("v4l2-ctl", "--device", path, "--list-formats-ext")
@@ -187,21 +186,39 @@ func (s *Server) devices(w http.ResponseWriter, _ *http.Request) {
 // device reachable under several names - the stable /dev/*/by-id/ symlink and
 // the kernel's own /dev/video0 - is reported once, under the first pattern
 // that found it, so that querying it stays a single call.
-func discover(patterns []string) []string {
+//
+// The names it reports are the ones the appliance uses, not the ones it looked
+// under: with a root pointing somewhere else the paths are searched there but
+// still named /dev/..., because that is what goes into the configuration and
+// what the bridge will open.
+func (r system) discover(patterns []string) []string {
 	seen := map[string]bool{}
 	var result []string
 	for _, pattern := range patterns {
-		matches, _ := filepath.Glob(pattern)
+		matches, _ := filepath.Glob(r.path(pattern))
 		sort.Strings(matches)
 		for _, match := range matches {
 			target := resolve(match)
 			if _, err := os.Stat(match); err == nil && !seen[target] {
 				seen[target] = true
-				result = append(result, match)
+				result = append(result, r.unrooted(match))
 			}
 		}
 	}
 	return result
+}
+
+// unrooted turns a path that was looked up under Root back into the name the
+// appliance knows it by.
+func (r system) unrooted(path string) string {
+	if r == "" {
+		return path
+	}
+	trimmed := strings.TrimPrefix(path, string(r))
+	if !strings.HasPrefix(trimmed, "/") {
+		return "/" + trimmed
+	}
+	return trimmed
 }
 
 func resolve(path string) string {

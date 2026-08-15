@@ -77,11 +77,41 @@ add_service() {
 	fi
 }
 
+# The services whose absence nobody would notice in time.
+#
+# add_service skips whatever it cannot find, which is right for the ones that
+# only make the appliance nicer - no ntpd means a wrong clock, and the journal
+# already carries uptimes for that reason. It is wrong for these. An Alpine
+# release that renames or drops klogd would build a perfectly good image with no
+# kernel messages in the log; one that drops the sysctl service would build one
+# that does not reboot after an oops; a renamed file of our own would silently
+# take the GRBL bridge, the watchdog or the web interface out of the image. All
+# of those are found on the appliance, weeks later, by someone looking for
+# something else.
+require_service() {
+	runlevel=$1
+	service=$2
+	if [ ! -e "$ROOT/etc/init.d/$service" ]; then
+		echo "required service $service has no init script; refusing to build an image without it" >&2
+		exit 1
+	fi
+	add_service "$runlevel" "$service"
+}
+
 for service in devfs dmesg mdev hwdrivers; do add_service sysinit "$service"; done
-for service in modules sysctl hostname bootmisc syslog localmount hwclock laserbridge-init; do add_service boot "$service"; done
+for service in modules hostname bootmisc localmount hwclock; do add_service boot "$service"; done
+# sysctl carries the panic settings, so an appliance without it does not reboot
+# after an oops. klogd puts the kernel's own messages into the same log as
+# everything else; without it an oops, an out-of-memory kill or a USB reset
+# lives only in a ring buffer that the reboot empties, and those are exactly
+# the failures on a headless appliance that can only be read afterwards. The
+# watchdog is armed here, in the boot runlevel, before the services it outlives
+# and sharing no dependency with any of them.
+for service in sysctl syslog klogd laserbridge-init laserbridge-watchdog; do require_service boot "$service"; done
+for service in networking avahi-daemon ntpd; do add_service default "$service"; done
 # Both GRBL backends are enabled; each refuses to start unless the
 # configuration names it, so exactly one ends up owning the serial port.
-for service in networking laserbridge-network avahi-daemon ntpd sshd ser2net laserbridged ustreamer laserbridge-web laserbridge-boot-confirm; do add_service default "$service"; done
+for service in laserbridge-network sshd ser2net laserbridged ustreamer laserbridge-web laserbridge-boot-confirm; do require_service default "$service"; done
 for service in mount-ro killprocs savecache; do add_service shutdown "$service"; done
 
 # Alpine ships kernel modules individually gzipped. Inside an xz SquashFS that

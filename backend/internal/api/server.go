@@ -2,8 +2,10 @@ package api
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,11 +39,22 @@ type Server struct {
 	BridgeSocket string
 	// BridgeWatch answers whether the daemon is still responsive. Nil where
 	// nothing is watching, which is the read-only case and the tests.
-	BridgeWatch   *lbruntime.BridgeWatch
-	WirelessSysfs string
-	Logger        *log.Logger
-	mu            sync.Mutex
-	updateMu      sync.Mutex
+	BridgeWatch *lbruntime.BridgeWatch
+	// Root is where this server reads the running system: /proc for load,
+	// memory and sockets, /sys for the wireless interface and the camera's
+	// name, /dev for the devices themselves. Empty means "/", which is the
+	// appliance; a test points it at a directory it built.
+	//
+	// One field, not one per subsystem. The status page reports on the machine
+	// it runs on, and a test that can only redirect half of those paths is a
+	// test that reads the developer's machine for the other half.
+	Root   string
+	Logger *log.Logger
+	// passwords slows down guessing of the one secret this appliance has,
+	// shared by every endpoint that checks it.
+	passwords attemptGuard
+	mu        sync.Mutex
+	updateMu  sync.Mutex
 }
 
 func (s *Server) Handler() http.Handler {
@@ -82,6 +95,13 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' http:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'")
+		// Nothing the API says is worth keeping a copy of. The status changes
+		// by the second, and the requests that carry the appliance password
+		// cross an ordinary HTTP connection - they must not also come to rest
+		// in a cache along the way.
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Cache-Control", "no-store")
+		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -135,7 +155,32 @@ func (s *Server) getConfig(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	w.Header().Set("ETag", configETag(cfg))
 	writeJSON(w, http.StatusOK, cfg)
+}
+
+// configETag names a particular configuration, so a writer can say which one it
+// was editing.
+//
+// The whole document is sent on every save, which means two people - two
+// browser tabs, a second operator, a page left open since yesterday while
+// somebody edited /data/config.yaml over SSH - silently overwrite each other,
+// and the loser never learns that anything happened. The mutex serialises the
+// writes; it cannot tell that one of them was composed against a version that
+// no longer exists.
+//
+// It is the marshalled form that is hashed rather than the struct: that is
+// exactly what is stored, so two configurations with the same tag are the same
+// file, and a tag survives a round trip through the parser unchanged.
+func configETag(cfg config.Config) string {
+	data, err := config.MarshalYAML(cfg)
+	if err != nil {
+		// An unmarshallable configuration cannot be named, and must not be
+		// given a name that another one could accidentally match.
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return `"` + hex.EncodeToString(sum[:8]) + `"`
 }
 
 func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
@@ -158,6 +203,15 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// A caller that says which configuration it was editing is told when that
+	// is no longer the one on disk. Saying nothing is still allowed - a shell
+	// script with curl has no page to have loaded - so this protects the
+	// interface that does send it rather than everybody equally.
+	if tag := r.Header.Get("If-Match"); tag != "" && tag != configETag(previous) {
+		writeError(w, http.StatusPreconditionFailed,
+			"the configuration changed somewhere else since this page loaded; reload it before saving")
+		return
+	}
 	// Secrets and first-boot state cannot be overwritten through the general
 	// configuration document returned to the browser.
 	next.System.SetupComplete = previous.System.SetupComplete
@@ -169,6 +223,13 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
 	// Saving GRBL settings restarts the bridge, which drops the client. Other
 	// sections do not touch it, so only this one has to ask.
 	if previous.GRBL != next.GRBL && s.refuseWhileBusy(w, r, "not restarting the bridge") {
+		return
+	}
+	// Handing the kernel permission to suspend an idle USB device reaches the
+	// adapter that is carrying the job. Taking that permission away cannot cost
+	// anything, so only the direction that adds a way to lose bytes has to ask.
+	if next.System.USBAutosuspend >= 0 && next.System.USBAutosuspend != previous.System.USBAutosuspend &&
+		s.refuseWhileBusy(w, r, "not allowing the kernel to suspend USB devices") {
 		return
 	}
 	if err := s.Store.Save(next); err != nil {
@@ -191,6 +252,9 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// The name of what was just written, so the page can keep editing without
+	// another round trip.
+	w.Header().Set("ETag", configETag(next))
 	writeJSON(w, http.StatusOK, map[string]any{"config": next, "warnings": warnings})
 }
 
@@ -217,7 +281,10 @@ func changedServices(a, b config.Config) []string {
 	if a.SSH != b.SSH {
 		result = append(result, "sshd")
 	}
-	if a.System != b.System {
+	// Only the hostname: avahi advertises that and nothing else in this
+	// section, and restarting it for a USB power setting would drop every
+	// browser's mDNS name for the appliance to no purpose.
+	if a.System.Hostname != b.System.Hostname {
 		result = append(result, "avahi-daemon")
 	}
 	// Wi-Fi is deliberately absent: putConfig carries the previous Wi-Fi
@@ -243,7 +310,7 @@ func desiredAction(service string, cfg config.Config) string {
 func (s *Server) serviceAction(w http.ResponseWriter, r *http.Request) {
 	service := r.PathValue("service")
 	action := r.PathValue("action")
-	allowedService := map[string]bool{"ser2net": true, "laserbridged": true, "ustreamer": true, "sshd": true, "avahi-daemon": true, "laserbridge-web": true}
+	allowedService := map[string]bool{"ser2net": true, "laserbridged": true, "ustreamer": true, "sshd": true, "avahi-daemon": true, "laserbridge-web": true, "laserbridge-watchdog": true}
 	allowedAction := map[string]bool{"start": true, "stop": true, "restart": true}
 	if !allowedService[service] || !allowedAction[action] {
 		writeError(w, http.StatusNotFound, "unknown service action")
@@ -285,6 +352,14 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request) {
 			limit = parsed
 		}
 	}
+	// The log is a file on /data so that it survives the reboot that follows
+	// whatever went wrong. logread stays as the fallback for an appliance whose
+	// syslogd was pointed back at the shared-memory ring, and for the moment
+	// after a fresh boot when the file does not exist yet.
+	if data, err := os.ReadFile(s.dataPath("log", "messages")); err == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"lines": tail(string(data), limit)})
+		return
+	}
 	if s.Runner == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"lines": []string{}})
 		return
@@ -294,11 +369,15 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not read logs")
 		return
 	}
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	writeJSON(w, http.StatusOK, map[string]any{"lines": tail(string(out), limit)})
+}
+
+func tail(text string, limit int) []string {
+	lines := strings.Split(strings.TrimSpace(text), "\n")
 	if len(lines) > limit {
 		lines = lines[len(lines)-limit:]
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"lines": lines})
+	return lines
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
@@ -331,8 +410,20 @@ func uniqueAddresses() []string {
 	return result
 }
 
-func pathExists(path string) bool {
-	_, err := os.Stat(path)
+// system is the filesystem the appliance reads facts about itself from. It is
+// a value rather than a scattering of literals so that the whole status page
+// can be pointed at a directory a test built - and so that no test can read, or
+// write, the machine running it by accident.
+type system string
+
+func (r system) path(parts ...string) string {
+	return filepath.Join(append([]string{string(r)}, parts...)...)
+}
+
+func (s *Server) system() system { return system(s.Root) }
+
+func (r system) exists(path string) bool {
+	_, err := os.Stat(r.path(path))
 	return err == nil
 }
 

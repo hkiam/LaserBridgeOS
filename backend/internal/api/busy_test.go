@@ -70,8 +70,11 @@ func busyServer(t *testing.T) (http.Handler, *config.Store, *os.File) {
 	}
 
 	runner := &fakeRunner{}
-	manager := &lbruntime.Manager{Store: store, Dir: filepath.Join(dir, "run"), DataDir: filepath.Join(dir, "data"), Run: runner}
-	handler := (&Server{Store: store, Runtime: manager, Runner: runner, BridgeSocket: socket}).Handler()
+	// One root for the whole server: nothing here may read - or write - the
+	// machine running the test.
+	root := filepath.Join(dir, "root")
+	manager := &lbruntime.Manager{Store: store, Dir: filepath.Join(dir, "run"), DataDir: filepath.Join(dir, "data"), Run: runner, Root: root}
+	handler := (&Server{Store: store, Runtime: manager, Runner: runner, BridgeSocket: socket, Root: root}).Handler()
 	return handler, store, controller
 }
 

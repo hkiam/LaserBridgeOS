@@ -91,6 +91,54 @@ virtual-console gettys are spawned on the headless appliance. OpenRC runs in
 quiet mode so routine service progress is not rendered to an unused console;
 errors remain visible when a display is attached for diagnostics.
 
+## Configuration compatibility between slots
+
+`/data/config.yaml` is shared by both system slots, so it is read by whichever
+version happens to be booted. Parsing therefore tolerates what it does not know
+— unknown sections, unknown keys, unusable values — records each in
+`Store.Notes()`, and leaves the file unchanged so the other slot keeps its
+settings. The structural shape (sections of flat two-space-indented `key: value`
+scalars) remains a hard requirement, since damage and a newer schema are
+otherwise indistinguishable. `DisallowUnknownFields` still applies to JSON
+arriving at the API.
+
+A configuration that fails validation is quarantined to `config.yaml.broken`
+and replaced by `config.Salvage`, which keeps hostname, Wi-Fi and network
+settings where each validates on its own and defaults the rest, so a recovery
+never costs the appliance its place on the network. `/api/status` reports the
+notes as `config_warnings`. See ADR 0016.
+
+## USB power management
+
+USB autosuspend is disabled by default, on the kernel command line
+(`usbcore.autosuspend=-1`) for devices probed during boot and by
+`laserbridge apply` afterwards. Applying it touches both the usbcore module
+parameter, which only governs devices probed from that point on, and
+`/sys/bus/usb/devices/*/power/{control,autosuspend_delay_ms}`, which is where
+the already-probed serial adapter and camera keep their own policy.
+`system.usb_autosuspend` chooses the delay in seconds; `-1` disables it.
+
+Failing to write those attributes does not fail `Apply` — an unprivileged
+backend, a read-only `/sys`, or a kernel without `CONFIG_PM` are absences
+rather than misconfigurations — so `/api/status` reports the value usbcore
+answers with alongside the configured one, and the System page shows both.
+
+## Reading the running system
+
+Everything the appliance observes about its own machine — `/proc` for load,
+memory and sockets, `/sys` for USB power management, the wireless interface and
+the camera's name, `/dev` for the devices themselves — is resolved against a
+single `Root` field on `api.Server` and `runtime.Manager`. Empty means `/`,
+which is the appliance; tests point it at a directory they built. Device paths
+are looked up under the root but reported under their real names, since that is
+what goes into the configuration and what the bridge opens.
+
+One field rather than one per subsystem, because the alternative had already
+started to grow: the first test to write USB power settings wrote them to the
+machine running the test, and only failed because a container mounts `/sys`
+read-only. `DataDir` stays separate — that is the appliance's own state, and it
+is configured independently.
+
 ## Device discovery
 
 Discovery prefers `/dev/serial/by-id/*` and `/dev/v4l/by-id/*`, then falls back
@@ -121,9 +169,18 @@ network migration workflow exists.
 ## Failure recovery
 
 OpenRC `supervise-daemon` restarts the web, ser2net, and camera processes with
-bounded respawn delays. Logs use BusyBox's RAM ring buffer and are exposed by
-the API through `logread`. The layout leaves room for a later watchdog process
-without changing persistence or service boundaries.
+bounded respawn delays. `BridgeWatch` in the web backend restarts a GRBL bridge
+that is running but no longer answering, and a hardware watchdog
+(`laserbridge watchdog`, ADR 0017) resets the board when the kernel stops
+scheduling userspace at all — the one failure no software layer can act on.
+`kernel.panic_on_oops` and `kernel.panic` get most lockups as far as a reboot
+before the watchdog has to.
+
+Logs go to `/data/log/messages`, rotated by BusyBox syslogd at 200 KiB with two
+generations kept, with `klogd` feeding the kernel's own messages into the same
+file. `/api/logs` reads that file and falls back to `logread` where it does not
+exist. The point is that an OOM kill, an oops or a USB reset is still readable
+after the reboot that followed it; a tmpfs ring buffer is not.
 
 ## Updates
 

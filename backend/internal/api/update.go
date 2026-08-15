@@ -109,6 +109,12 @@ func (s *Server) checkUpdatePassword(candidate string) error {
 	if s.Runtime.PasswordIsDefault() {
 		return errors.New("this appliance still has its default password; change it before installing updates with one")
 	}
+	// The same guard as the password endpoint, because it is the same secret:
+	// counting the two separately would only mean guessing on whichever one
+	// happens to be cheap.
+	if wait := s.passwords.wait(); wait > 0 {
+		return fmt.Errorf("too many wrong passwords; try again in %d seconds", int(wait.Round(time.Second).Seconds()))
+	}
 	ok, err := s.Runtime.VerifyPassword(candidate)
 	if err != nil {
 		if s.Logger != nil {
@@ -116,10 +122,8 @@ func (s *Server) checkUpdatePassword(candidate string) error {
 		}
 		return errors.New("could not check the password")
 	}
+	s.passwords.record(ok)
 	if !ok {
-		// Slow down guessing a little. The endpoint is reachable by anyone on
-		// the local network, and the password is the only thing guarding it.
-		time.Sleep(time.Second)
 		return errors.New("wrong password")
 	}
 	return nil

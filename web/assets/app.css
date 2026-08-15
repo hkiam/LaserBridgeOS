@@ -156,6 +156,16 @@ label.choice input { width: 17px; height: 17px; accent-color: var(--accent); }
   opacity: 0.7;
 }
 
+/* What the selected backend is not watching. Deliberately a list: each line is
+   a separate thing that is off, and a paragraph would let them blur. */
+.plain-list {
+  margin: 0.5rem 0;
+  padding-left: 1.1rem;
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
 .journal-intro { margin: 0 0 0.75rem; font-size: 0.85rem; }
 .journal-row {
   display: grid;
