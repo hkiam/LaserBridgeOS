@@ -123,6 +123,17 @@ type Machine struct {
 	// output is a spindle, and a feed hold deliberately leaves a spindle
 	// running.
 	LaserMode Setting `json:"laser_mode"`
+	// Firmware and Options are what the controller says it is, from the [VER:]
+	// and [OPT:] lines it answers $I with.
+	//
+	// They were being seen and thrown away. Both arrive as bracketed messages,
+	// and LastMessage is a single slot that the next one overwrites - so on a
+	// real appliance the firmware string survived for about a millisecond
+	// before a [G54:] line replaced it. Everything this bridge does about an
+	// unattended laser rests on how a particular GRBL behaves, which makes the
+	// version that told us so worth more than one slot.
+	Firmware string `json:"firmware,omitempty"`
+	Options  string `json:"options,omitempty"`
 }
 
 func NewObserver() *Observer {
@@ -242,7 +253,16 @@ func (o *Observer) apply(report Report) {
 	case "error":
 		o.machine.LastError = report.Code
 	case "message":
-		o.machine.LastMessage = strings.Trim(report.Text, "[]")
+		message := strings.Trim(report.Text, "[]")
+		o.machine.LastMessage = message
+		// Kept in their own fields, because the next bracketed line is a
+		// fraction of a second away and there is only one LastMessage.
+		switch {
+		case strings.HasPrefix(message, "VER:"):
+			o.machine.Firmware = strings.TrimSuffix(strings.TrimPrefix(message, "VER:"), ":")
+		case strings.HasPrefix(message, "OPT:"):
+			o.machine.Options = strings.TrimPrefix(message, "OPT:")
+		}
 	case "welcome":
 		// A reset clears everything the controller knew, so the reading has to
 		// forget it too rather than show coordinates from before the reset.
@@ -259,7 +279,11 @@ func (o *Observer) apply(report Report) {
 			BeamUnix:    o.lastReport.Unix(),
 			Reports:     o.machine.Reports,
 			BeamReports: o.machine.Reports,
-			LaserMode:   o.machine.LaserMode,
+			// A reset changes neither the firmware nor the stored settings, so
+			// what the controller told us about itself still holds.
+			LaserMode: o.machine.LaserMode,
+			Firmware:  o.machine.Firmware,
+			Options:   o.machine.Options,
 		}
 	}
 }

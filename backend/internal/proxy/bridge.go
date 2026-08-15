@@ -194,6 +194,12 @@ type Bridge struct {
 	// makes "has never said anything" a fault rather than an absence.
 	portOpenedAt time.Time
 
+	// probed is closed once the controller has been asked what it is, or once
+	// it is clear that it cannot be. No client is served before then - see
+	// probeController for why that gate has to exist.
+	probed    chan struct{}
+	probeOnce sync.Once
+
 	rx       atomic.Uint64
 	tx       atomic.Uint64
 	rejected atomic.Uint64
@@ -234,6 +240,7 @@ func New(config Config, logger *log.Logger) *Bridge {
 	bridge := &Bridge{
 		config:   config,
 		logger:   logger,
+		probed:   make(chan struct{}),
 		state:    StateStopped,
 		observer: grbl.NewObserver(),
 		journal:  NewJournal(config.JournalPath),
@@ -403,7 +410,19 @@ func (b *Bridge) Run(ctx context.Context, ready chan<- struct{}) error {
 		// loop would keep that loop busy for as long as a client is
 		// connected, and a second client could never arrive to take over -
 		// which is exactly what kick_old_user asks for.
-		go b.serveClient(conn)
+		//
+		// It waits, briefly, for the opening questions to the controller to be
+		// finished. The connection is already accepted at the TCP level, so a
+		// client sees a socket that is quiet for a moment rather than a refusal
+		// - and the settings dump those questions produce goes nowhere, because
+		// b.client is still nil while it arrives.
+		go func(conn net.Conn) {
+			select {
+			case <-b.probed:
+			case <-time.After(probeGrace):
+			}
+			b.serveClient(conn)
+		}(conn)
 	}
 }
 
@@ -426,6 +445,19 @@ func (b *Bridge) serveDevice(ctx context.Context, finished chan<- struct{}) {
 		if port == nil {
 			b.closePort()
 			return
+		}
+		// Only ever on the first port this daemon opens, and concurrently with
+		// the read loop below, which is what feeds the observer the answers.
+		//
+		// Not on a re-open after the adapter came back: the accept gate is a
+		// one-time thing, so by then a client can be served at any moment and a
+		// queued command would land in the middle of its line accounting. The
+		// cost is that a replugged adapter leaves $32 unknown again until a
+		// client asks for it, which is where it was before any of this.
+		select {
+		case <-b.probed:
+		default:
+			go b.probeController(port)
 		}
 
 		for {
@@ -502,6 +534,10 @@ func (b *Bridge) openPort(ctx context.Context) *serial.Port {
 			b.setState(StateWaitingForDevice)
 			b.setError(err)
 			announced = true
+			// Nothing to ask and nobody to ask it of, so a client that
+			// connects now must not be held waiting for questions that will
+			// never be put.
+			b.finishProbe()
 		}
 		select {
 		case <-ctx.Done():

@@ -46,6 +46,11 @@ type controllerSim struct {
 	// ignoreStop is a controller that does not implement the spindle-stop
 	// override, or implements it and leaves the laser on anyway.
 	ignoreStop bool
+	// line accumulates a queued command until its newline arrives, the way a
+	// controller reading a serial port does.
+	line strings.Builder
+	// laserMode is what $$ answers for $32.
+	laserMode string
 	// sinceOverrides counts reports since the Ov: block was last printed, and
 	// lastReportedBeam is what it said then - a change forces the block out
 	// immediately, as it does on the real controller.
@@ -75,6 +80,13 @@ func (c *controllerSim) moveTo(x float64) {
 func (c *controllerSim) silenceOverrides() {
 	c.mu.Lock()
 	c.overrides = false
+	c.mu.Unlock()
+}
+
+// setLaserMode decides what $$ answers for $32.
+func (c *controllerSim) setLaserMode(value string) {
+	c.mu.Lock()
+	c.laserMode = value
 	c.mu.Unlock()
 }
 
@@ -117,6 +129,27 @@ func (c *controllerSim) run(done <-chan struct{}) {
 func (c *controllerSim) handle(b byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// Queued commands arrive a byte at a time and are answered a line at a
+	// time, with an "ok" like any other. Only the $ ones are answered here:
+	// the tests that stream G-code were written against a controller that says
+	// nothing, and making it talkative is a change for another day.
+	if b != statusReq && b != feedHold && b != spindleStop && b != softReset {
+		if b == '\n' || b == '\r' {
+			line := strings.TrimSpace(c.line.String())
+			c.line.Reset()
+			switch {
+			case line == "$I":
+				_, _ = c.controller.Write([]byte("[VER:1.1h.20190825:]\r\n[OPT:V,15,128]\r\nok\r\n"))
+			case line == "$$":
+				_, _ = c.controller.Write([]byte("$30=1000\r\n$31=0\r\n$32=" + c.laserMode + "\r\nok\r\n"))
+			}
+			return
+		}
+		if c.line.Len() < 128 {
+			c.line.WriteByte(b)
+		}
+		return
+	}
 	switch b {
 	case statusReq:
 		c.pollCount++
@@ -191,7 +224,7 @@ func startWithSim(t *testing.T, overrides, beam bool, adjust func(*Config)) (*co
 		c.BeamConfirm = 3 * time.Second
 		adjust(c)
 	})
-	sim := &controllerSim{t: t, controller: controller, state: "Run", beam: beam, overrides: overrides}
+	sim := &controllerSim{t: t, controller: controller, state: "Run", beam: beam, overrides: overrides, laserMode: "1"}
 	done := make(chan struct{})
 	go sim.run(done)
 	t.Cleanup(func() { close(done) })
@@ -311,10 +344,10 @@ func TestHoldResetsWhenLaserModeIsOff(t *testing.T) {
 	sim, bridge, client := startWithSim(t, false, true, func(c *Config) {
 		c.OnDisconnect = DisconnectHold
 	})
+	// The controller answers $$ itself now, the way one does, rather than the
+	// test posting the answer through the letterbox.
+	sim.setLaserMode("0")
 	if _, err := client.Write([]byte("$$\n")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := sim.controller.Write([]byte("$32=0\r\nok\r\n")); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { return bridge.Status().Machine.LaserMode == "off" }, "laser mode to be read")

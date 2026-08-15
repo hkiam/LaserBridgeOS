@@ -157,6 +157,11 @@ async function loadMachine() {
   setText('#machine-feed', machine.state ? `${machine.feed || 0} mm/min · ${machine.spindle || 0}` : '—');
   setText('#machine-bytes', `${bytes(bridge.rx_bytes)} in · ${bytes(bridge.tx_bytes)} out`);
   setText('#machine-beam', beamText(machine));
+  // What is actually on the other end of the cable, and the one setting that
+  // decides whether a feed hold switches the output off. Both used to be seen
+  // and thrown away, and $32 is the difference between the appliance knowing
+  // that a hold is enough and only hoping so.
+  setText('#machine-firmware', firmwareText(machine));
 
   // Anything the bridge did on its own accord is worth saying plainly: an
   // operator who finds a paused machine should not have to guess why.
@@ -257,6 +262,13 @@ function beamText(machine) {
     return `not conclusive — last said off ${age === null ? 'earlier' : `${age} s ago`}, cutting at S${machine.spindle}`;
   }
   return age ? `${said} (as of ${age} s ago)` : said;
+}
+
+function firmwareText(machine) {
+  const laser = {on: '$32 laser mode on', off: '$32 laser mode OFF — a feed hold does not stop a spindle'}[machine.laser_mode]
+    || '$32 unknown';
+  if (!machine.firmware) return `not identified — ${laser}`;
+  return `${machine.firmware}${machine.options ? ` (${machine.options})` : ''} — ${laser}`;
 }
 
 function machineClass(machineState, bridgeState) {
