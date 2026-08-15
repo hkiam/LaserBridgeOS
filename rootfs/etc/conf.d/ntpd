@@ -1,0 +1,9 @@
+# Best-effort network time.
+#
+# The journal's whole value is being able to say when something happened, and
+# without this the appliance knows only what its RTC battery remembers. -n
+# keeps busybox ntpd in the foreground for the supervisor, -N raises its
+# priority, and -p names the servers. On a workshop network with no route to
+# the internet this simply never succeeds, which costs a few packets and
+# nothing else.
+NTPD_OPTS="-n -N -p pool.ntp.org -p time.cloudflare.com"

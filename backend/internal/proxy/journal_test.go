@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"net"
 	"os"
@@ -40,6 +41,9 @@ func TestJournalWritesOnlyWhatIsWorthKeeping(t *testing.T) {
 	journal.Add(Event{Kind: "alarm", Text: "ALARM:1", Code: 1})
 	journal.Add(Event{Kind: "client", Text: "disconnected"})
 	journal.Add(Event{Kind: "intervention", Text: "feed hold"})
+	// Writing happens on its own goroutine, so the disk is only guaranteed to
+	// have caught up once the journal is closed.
+	journal.Close()
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -69,8 +73,11 @@ func TestJournalRotatesRatherThanGrowing(t *testing.T) {
 	journal := NewJournal(path)
 	filler := strings.Repeat("x", 1024)
 	for i := 0; i < (journalMaxBytes/1024)+8; i++ {
-		journal.Add(Event{Kind: "alarm", Text: filler})
+		// Distinct, so that collapsing repeats does not turn the whole lot
+		// into one line and defeat the point of the test.
+		journal.Add(Event{Kind: "alarm", Text: filler + strconv.Itoa(i)})
 	}
+	journal.Close()
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
@@ -87,9 +94,62 @@ func TestJournalSurvivesAnUnwritablePath(t *testing.T) {
 	// A record of trouble must not become trouble of its own. On a full or
 	// read-only /data the history is lost; the bridge is not.
 	journal := NewJournal(filepath.Join(t.TempDir(), "no-such-dir", "\x00bad", "journal.log"))
+	defer journal.Close()
 	journal.Add(Event{Kind: "alarm", Text: "ALARM:1"})
 	if len(journal.Recent(0)) != 1 {
 		t.Error("the event was lost from memory as well")
+	}
+}
+
+func TestJournalDoesNotBlockWhenTheDiskCannotKeepUp(t *testing.T) {
+	// Add is called from the goroutine that drains the serial port. A
+	// controller rejecting every line of a bad job produces hundreds of events
+	// a second, and the reader must not wait for any of them to reach a disk.
+	path := filepath.Join(t.TempDir(), "journal.log")
+	journal := NewJournal(path)
+	defer journal.Close()
+
+	start := time.Now()
+	for i := 0; i < journalQueue*20; i++ {
+		journal.Add(Event{Kind: "error", Text: "error:9", Code: 9})
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("recording %d events took %s; the serial reader would have stalled",
+			journalQueue*20, elapsed)
+	}
+	// What is kept in memory is complete either way; only the disk gives up.
+	if got := len(journal.Recent(0)); got != journalDepth {
+		t.Errorf("memory holds %d events, want %d", got, journalDepth)
+	}
+}
+
+func TestRepeatedEventsCollapse(t *testing.T) {
+	// An error storm is one line with a count, not a hundred lines.
+	path := filepath.Join(t.TempDir(), "journal.log")
+	journal := NewJournal(path)
+	for i := 0; i < 50; i++ {
+		journal.Add(Event{Kind: "error", Text: "error:9", Code: 9})
+	}
+	journal.Close()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) >= 50 {
+		t.Fatalf("wrote %d lines for 50 identical events", len(lines))
+	}
+	total := 0
+	for _, line := range lines {
+		var event Event
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		total += 1 + event.Repeats
+	}
+	if total != 50 {
+		t.Errorf("the counts add up to %d, want 50 - events were lost rather than collapsed", total)
 	}
 }
 
@@ -203,15 +263,15 @@ func TestJournalOverTheStatusSocket(t *testing.T) {
 	bridge.Journal().Add(Event{Kind: "alarm", Text: "ALARM:1", Code: 1})
 
 	server := NewStatusSocket(socket, bridge)
-	done := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
 	finished := make(chan struct{})
 	go func() {
 		defer close(finished)
-		if err := server.Serve(done); err != nil {
+		if err := server.Serve(ctx); err != nil {
 			t.Errorf("serve: %v", err)
 		}
 	}()
-	t.Cleanup(func() { close(done); <-finished })
+	t.Cleanup(func() { cancel(); <-finished })
 
 	var events []Event
 	deadline := time.Now().Add(5 * time.Second)
@@ -232,13 +292,13 @@ func TestStatusSocketRejectsNonsense(t *testing.T) {
 	socket := filepath.Join(t.TempDir(), "bridge.sock")
 	bridge := New(Config{Port: 23, Device: "/dev/null"}, nil)
 	server := NewStatusSocket(socket, bridge)
-	done := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
 	finished := make(chan struct{})
 	go func() {
 		defer close(finished)
-		_ = server.Serve(done)
+		_ = server.Serve(ctx)
 	}()
-	t.Cleanup(func() { close(done); <-finished })
+	t.Cleanup(func() { cancel(); <-finished })
 
 	var conn net.Conn
 	var err error

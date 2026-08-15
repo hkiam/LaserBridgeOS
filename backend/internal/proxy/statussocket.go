@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // StatusSocket answers questions about the bridge over a Unix socket.
@@ -33,8 +35,8 @@ func NewStatusSocket(path string, bridge *Bridge) *StatusSocket {
 	return &StatusSocket{path: path, bridge: bridge}
 }
 
-// Serve listens until done is closed.
-func (s *StatusSocket) Serve(done <-chan struct{}) error {
+// Serve listens until the context is cancelled.
+func (s *StatusSocket) Serve(ctx context.Context) error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0755); err != nil {
 		return err
 	}
@@ -57,7 +59,7 @@ func (s *StatusSocket) Serve(done <-chan struct{}) error {
 	}
 
 	go func() {
-		<-done
+		<-ctx.Done()
 		listener.Close()
 	}()
 
@@ -98,37 +100,50 @@ func (s *StatusSocket) answer(conn net.Conn) {
 	}
 }
 
+// askTimeout bounds a question to the daemon.
+//
+// Without one, a daemon that is running but wedged is worse than one that has
+// died: the kernel accepts the connection on its behalf and the answer never
+// comes. The web backend asks every couple of seconds, so a blocked read is
+// not one stuck request but a growing pile of them, and the interface an
+// operator would use to find out what is wrong stops responding too.
+const askTimeout = 2 * time.Second
+
+func ask(path, command string, into any, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = askTimeout
+	}
+	conn, err := net.DialTimeout("unix", path, timeout)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+		return err
+	}
+	if _, err := conn.Write([]byte(command + "\n")); err != nil {
+		return err
+	}
+	return json.NewDecoder(conn).Decode(into)
+}
+
 // ReadStatus asks the daemon for its status. The web backend uses this rather
 // than reaching for the serial port.
 func ReadStatus(path string) (Status, error) {
-	conn, err := net.Dial("unix", path)
-	if err != nil {
-		return Status{}, err
-	}
-	defer conn.Close()
-	if _, err := conn.Write([]byte("status\n")); err != nil {
-		return Status{}, err
-	}
+	return ReadStatusWithin(path, askTimeout)
+}
+
+// ReadStatusWithin is ReadStatus for a caller that knows how long it is
+// willing to wait - a liveness check wants a different answer to a page load.
+func ReadStatusWithin(path string, timeout time.Duration) (Status, error) {
 	var status Status
-	if err := json.NewDecoder(conn).Decode(&status); err != nil {
-		return Status{}, err
-	}
-	return status, nil
+	err := ask(path, "status", &status, timeout)
+	return status, err
 }
 
 // ReadJournal asks the daemon what has gone wrong lately.
 func ReadJournal(path string, limit int) ([]Event, error) {
-	conn, err := net.Dial("unix", path)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-	if _, err := conn.Write([]byte("journal " + strconv.Itoa(limit) + "\n")); err != nil {
-		return nil, err
-	}
 	var events []Event
-	if err := json.NewDecoder(conn).Decode(&events); err != nil {
-		return nil, err
-	}
-	return events, nil
+	err := ask(path, "journal "+strconv.Itoa(limit), &events, askTimeout)
+	return events, err
 }

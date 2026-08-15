@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/laserbridgeos/laserbridgeos/backend/internal/grbl"
@@ -47,9 +48,25 @@ type Event struct {
 	// Line is the one line a reply answered, when the bridge has seen enough
 	// of the conversation to say so. Empty when it cannot be sure.
 	Line string `json:"line,omitempty"`
+	// Repeats is how many further identical events followed this one. An error
+	// storm is one line with a count, not a hundred lines.
+	Repeats int `json:"repeats,omitempty"`
+	// UptimeSeconds is how long the appliance had been running. The wall clock
+	// depends on an RTC battery and a network that may not be there; this does
+	// not, so the order of events survives a clock that is simply wrong.
+	UptimeSeconds int64 `json:"uptime_seconds"`
 }
 
 // Journal keeps the recent past in memory and the notable part of it on disk.
+//
+// Writing to disk happens on its own goroutine, and that is not an
+// optimisation. Add is called from the goroutine that drains the serial port,
+// by way of the observer: a controller rejecting every line of a bad job -
+// wrong firmware, wrong dialect - produces hundreds of events a second, and a
+// file opened, written and closed for each of them would stall the reader and
+// wear the disk. The record of trouble must not become trouble of its own, and
+// it is not enough for it to survive write errors; it has to survive its own
+// volume.
 type Journal struct {
 	mu    sync.Mutex
 	ring  []Event
@@ -58,12 +75,91 @@ type Journal struct {
 
 	// path is where notable events are appended; empty keeps everything in
 	// memory, which is what the tests and a read-only appliance want.
-	path string
-	now  func() time.Time
+	path      string
+	now       func() time.Time
+	writes    chan Event
+	stopped   chan struct{}
+	closeOnce sync.Once
+	// size is the current file's length, kept by the writer goroutine alone so
+	// that rotation needs no stat per line.
+	size int64
+	// dropped counts events that arrived faster than the disk took them. It is
+	// reported rather than waited for.
+	dropped atomic.Uint64
 }
 
+// journalQueue is how many events may be waiting to be written. Deep enough to
+// absorb a burst, shallow enough that the memory is irrelevant, and bounded
+// because the alternative to dropping is blocking the serial port.
+const journalQueue = 256
+
 func NewJournal(path string) *Journal {
-	return &Journal{ring: make([]Event, journalDepth), path: path, now: time.Now}
+	j := &Journal{ring: make([]Event, journalDepth), path: path, now: time.Now}
+	if path != "" {
+		j.writes = make(chan Event, journalQueue)
+		j.stopped = make(chan struct{})
+		go j.writeLoop()
+	}
+	return j
+}
+
+// Close stops the writer and waits for what is already queued. Calling it
+// twice is harmless: a shutdown path that runs once in production runs from
+// several places in tests, and a panic there would be about nothing.
+func (j *Journal) Close() {
+	if j.writes == nil {
+		return
+	}
+	j.closeOnce.Do(func() { close(j.writes) })
+	<-j.stopped
+}
+
+// writeLoop batches whatever has piled up into one open-write-close, and
+// collapses repeats. An error storm is a hundred copies of one line, and a
+// record that says so once with a count is more use than a hundred entries.
+func (j *Journal) writeLoop() {
+	defer close(j.stopped)
+	var batch []Event
+	for {
+		event, ok := <-j.writes
+		if !ok {
+			return
+		}
+		batch = append(batch[:0], event)
+
+		// Take whatever else is already queued, without waiting for more.
+		for draining := true; draining; {
+			select {
+			case next, more := <-j.writes:
+				if !more {
+					// Closed mid-batch: write what is in hand and stop.
+					j.appendBatch(collapse(batch))
+					return
+				}
+				batch = append(batch, next)
+			default:
+				draining = false
+			}
+		}
+		j.appendBatch(collapse(batch))
+	}
+}
+
+// collapse turns consecutive identical events into one with a count.
+func collapse(batch []Event) []Event {
+	out := batch[:0:0]
+	for _, event := range batch {
+		if n := len(out); n > 0 && sameEvent(out[n-1], event) {
+			out[n-1].Repeats++
+			continue
+		}
+		out = append(out, event)
+	}
+	return out
+}
+
+func sameEvent(a, b Event) bool {
+	return a.Kind == b.Kind && a.Text == b.Text && a.Code == b.Code && a.Line == b.Line
 }
 
 // worthKeeping decides what survives a reboot. Client comings and goings are
@@ -82,6 +178,9 @@ func (j *Journal) Add(event Event) {
 	if event.Unix == 0 {
 		event.Unix = j.now().Unix()
 	}
+	if event.UptimeSeconds == 0 {
+		event.UptimeSeconds = int64(time.Since(started).Seconds())
+	}
 	j.mu.Lock()
 	index := (j.first + j.count) % len(j.ring)
 	j.ring[index] = event
@@ -92,10 +191,24 @@ func (j *Journal) Add(event Event) {
 	}
 	j.mu.Unlock()
 
-	if j.path != "" && worthKeeping(event.Kind) {
-		j.append(event)
+	if j.writes == nil || !worthKeeping(event.Kind) {
+		return
+	}
+	select {
+	case j.writes <- event:
+	default:
+		// The disk is slower than the trouble. Keeping the appliance running
+		// matters more than keeping every line of the story.
+		j.dropped.Add(1)
 	}
 }
+
+// Dropped is how many events never reached the disk because they arrived
+// faster than it could take them.
+func (j *Journal) Dropped() uint64 { return j.dropped.Load() }
+
+// started is when this process began, which is what uptime is measured from.
+var started = time.Now()
 
 // Recent returns the newest events last, which is the order they are read in.
 func (j *Journal) Recent(limit int) []Event {
@@ -115,27 +228,58 @@ func (j *Journal) Recent(limit int) []Event {
 // record of trouble, and it must not become trouble of its own by taking down
 // a bridge that is otherwise working. A full or read-only /data costs the
 // history, not the machine.
-func (j *Journal) append(event Event) {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	if info, err := os.Stat(j.path); err == nil && info.Size() > journalMaxBytes {
-		_ = os.Rename(j.path, j.path+".1")
-	} else if err != nil && !os.IsNotExist(err) {
+// appendBatch writes a batch with one open and one write, rotating in the
+// middle if the batch is what tips the file over the limit. The size is
+// tracked rather than stat'ed per event: this runs on its own goroutine, but a
+// syscall per line was the thing being fixed.
+func (j *Journal) appendBatch(events []Event) {
+	if len(events) == 0 {
 		return
 	}
 	if err := os.MkdirAll(filepath.Dir(j.path), 0755); err != nil {
 		return
 	}
-	file, err := os.OpenFile(j.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return
+	if j.size == 0 {
+		if info, err := os.Stat(j.path); err == nil {
+			j.size = info.Size()
+		} else if !os.IsNotExist(err) {
+			return
+		}
 	}
-	defer file.Close()
-	line, err := json.Marshal(event)
-	if err != nil {
-		return
+
+	var out []byte
+	flush := func() {
+		if len(out) == 0 {
+			return
+		}
+		file, err := os.OpenFile(j.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			out = nil
+			return
+		}
+		if n, err := file.Write(out); err == nil {
+			j.size += int64(n)
+		}
+		_ = file.Close()
+		out = nil
 	}
-	_, _ = file.Write(append(line, '\n'))
+
+	for _, event := range events {
+		line, err := json.Marshal(event)
+		if err != nil {
+			continue
+		}
+		line = append(line, '\n')
+		if j.size+int64(len(out)+len(line)) > journalMaxBytes {
+			flush()
+			if err := os.Rename(j.path, j.path+".1"); err != nil && !os.IsNotExist(err) {
+				return
+			}
+			j.size = 0
+		}
+		out = append(out, line...)
+	}
+	flush()
 }
 
 // lineTail remembers what the client sent, so GRBL's replies can be attributed.

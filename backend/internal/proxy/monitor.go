@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"net"
 	"strconv"
 	"strings"
@@ -163,7 +164,7 @@ func (m *monitors) closeAll() {
 }
 
 // serveMonitor listens on the monitor port until done is closed.
-func (b *Bridge) serveMonitor(done <-chan struct{}) {
+func (b *Bridge) serveMonitor(ctx context.Context) {
 	if b.config.MonitorPort <= 0 {
 		return
 	}
@@ -176,7 +177,7 @@ func (b *Bridge) serveMonitor(done <-chan struct{}) {
 	}
 	b.logf("monitor port %d open (read-only)", b.config.MonitorPort)
 	go func() {
-		<-done
+		<-ctx.Done()
 		listener.Close()
 		b.monitors.closeAll()
 	}()

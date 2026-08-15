@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -72,15 +73,15 @@ func TestGRBLStatusPassesTheBridgeReadingOn(t *testing.T) {
 	socket := filepath.Join(t.TempDir(), "laserbridged.sock")
 	bridge := proxy.New(proxy.Config{Port: 23, Device: "/dev/null"}, nil)
 	server := proxy.NewStatusSocket(socket, bridge)
-	done := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
 	finished := make(chan struct{})
 	go func() {
 		defer close(finished)
-		if err := server.Serve(done); err != nil {
+		if err := server.Serve(ctx); err != nil {
 			t.Errorf("status socket: %v", err)
 		}
 	}()
-	t.Cleanup(func() { close(done); <-finished })
+	t.Cleanup(func() { cancel(); <-finished })
 
 	handler, store := grblServer(t, socket)
 	cfg, _ := store.Load()

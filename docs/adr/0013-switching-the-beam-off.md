@@ -61,6 +61,19 @@ it costs:
    already stopped, it would switch the laser back on.
 2. `0x18`, soft reset. Guaranteed off, job over.
 
+**A machine that is already standing still skips both lower rungs.** GRBL
+enters HOLD only from a cycle or a jog, so a feed hold sent to an idle machine
+is ignored, and the override only acts in HOLD. For a machine sitting still
+with the laser on - somebody aiming it, or a hold that did not take - the
+gentle rungs are not gentle, they are inert, and trying them costs another
+second of beam. Only the soft reset reaches that machine.
+
+That case was written the wrong way first and the tests were green, because
+the controller simulator moved to HOLD from any state. Correcting the simulator
+turned the test red immediately. The lesson is recorded in the tests
+themselves: a simulator is a statement of belief, and a green test against one
+proves only that the code agrees with its author.
+
 When the controller never says - no `Ov:` field at all - the bridge does not
 guess, with one exception: if it has seen `$32=0`, the question is not open.
 The output is a spindle and the hold did not touch it, so it resets. Otherwise
@@ -98,11 +111,24 @@ thing it injects into a client's stream, it is read-only, and without it the
 watchdog would be reading a number that stopped updating exactly when it
 started mattering.
 
-**The appliance asks `$32` before it matters.** Two seconds after the port
-opens, with no client attached, it sends `$$` and reads the answer. Read-only,
-like the status request, and invisible to any client because there is none. A
-controller in spindle mode is then named on the status page and in the record,
-before the first job rather than after the first hole.
+**`$32` is learned by listening, not by asking.** The appliance does not send
+`$$` itself, and the reason is a distinction worth stating: everything else it
+injects - `?`, `!`, `~`, `0x18`, `0x9E` - is a real-time command, which GRBL
+answers with a status report or with nothing. `$$` is a queued command, and
+GRBL answers those with `ok`. Senders count those `ok`s to know how much of the
+128-byte receive buffer is free; one extra, from a line the sender never wrote,
+and it believes a line was accepted that was not. It then sends past the end of
+the buffer, characters are dropped, and the G-code the machine executes is not
+the G-code that was sent. That is not a failed job, it is a wrong cut.
+
+An earlier version of this document had the appliance probe `$$` two seconds
+after opening the port, guarded by "only when no client is attached". The guard
+does not hold: the answer arrives fifty milliseconds later, by which time a
+client may have connected and will be handed an `ok` it did not earn.
+
+So laser mode is read from the dump LightBurn requests on connect, which
+arrives within seconds of the first real client. Before that first connection
+the setting is simply unknown, which the ladder already handles.
 
 ## Consequences
 
@@ -115,6 +141,12 @@ checked.
 deliberate: nobody chooses `hold` in order to leave the beam burning, so
 verifying the intent was achieved is part of doing it rather than a separate
 option. Which branch was taken is in `last_intervention` and the journal.
+
+The ladder is now a pure function - `Decide`, a situation in and a step out -
+with the executing separated from the deciding. That is what makes a table of
+thirty situations checkable in microseconds instead of thirty pseudo-terminals
+and a minute of wall clock, and it is why the inert-rung case is now a visible
+row rather than a path nobody walked.
 
 The escalation depends on facts about GRBL that this project cannot test:
 that soft reset kills the spindle, that `0x9E` stops it during a hold, that the
@@ -130,6 +162,20 @@ pierce longer than the configured grace gets a feed hold. The setting exists
 precisely so that it can be raised, and the record says what happened and why.
 It cannot be wrong in the other direction cheaply - which is why the default is
 twenty seconds rather than five.
+
+**The daemon watching itself is a limit, not a solution.** The web backend asks
+the bridge every fifteen seconds whether it still knows what it is doing, and
+restarts it after three unanswered questions. On a real appliance that turned
+out to be worth less than it sounds: a daemon frozen at the kernel level cannot
+be stopped by OpenRC at all - the supervisor goes, the frozen child is orphaned
+and the service is marked stopped - and the first version of the check then saw
+"not running, so not a hang" and walked away from an appliance with no bridge.
+Being unable to fix something is one thing; leaving it worse is another. The
+configuration is now the authority on what should be running, a restart that
+ends stopped is followed by a start, and the honest guarantee is narrower than
+the mechanism suggests: a bridge that dies is respawned, a bridge that hangs is
+restarted if OpenRC can stop it, and either way the status page stops calling
+it running.
 
 None of this changes what the appliance is. It is still not an emergency stop,
 and it still depends on this daemon running, the link working and the

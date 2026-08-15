@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -36,24 +37,24 @@ func busyServer(t *testing.T) (http.Handler, *config.Store, *os.File) {
 		Device: devicePath, Baudrate: 115200, Port: port,
 		DeviceRetry: 20 * time.Millisecond, OnDisconnect: proxy.DisconnectNone,
 	}, nil)
-	done := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
 	ready := make(chan struct{})
 	finished := make(chan struct{})
 	go func() {
 		defer close(finished)
-		_ = bridge.Run(done, ready)
+		_ = bridge.Run(ctx, ready)
 	}()
 	<-ready
-	socketDone := make(chan struct{})
+	socketCtx, cancelSocket := context.WithCancel(context.Background())
 	socketFinished := make(chan struct{})
 	go func() {
 		defer close(socketFinished)
-		_ = proxy.NewStatusSocket(socket, bridge).Serve(socketDone)
+		_ = proxy.NewStatusSocket(socket, bridge).Serve(socketCtx)
 	}()
 	t.Cleanup(func() {
-		close(socketDone)
+		cancelSocket()
 		<-socketFinished
-		close(done)
+		cancel()
 		<-finished
 	})
 

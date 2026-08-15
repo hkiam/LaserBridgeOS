@@ -34,7 +34,10 @@ type Server struct {
 	WebRoot     string
 	VersionPath string
 	// BridgeSocket is where laserbridged answers; empty means the default.
-	BridgeSocket  string
+	BridgeSocket string
+	// BridgeWatch answers whether the daemon is still responsive. Nil where
+	// nothing is watching, which is the read-only case and the tests.
+	BridgeWatch   *lbruntime.BridgeWatch
 	WirelessSysfs string
 	Logger        *log.Logger
 	mu            sync.Mutex

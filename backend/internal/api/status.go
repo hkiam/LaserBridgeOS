@@ -8,6 +8,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/laserbridgeos/laserbridgeos/backend/internal/config"
 )
 
 type statusResponse struct {
@@ -67,7 +69,16 @@ func (s *Server) status(w http.ResponseWriter, _ *http.Request) {
 	// Whichever backend owns the GRBL port has to be listening on it to
 	// count as running, and the one that is not selected is simply off.
 	services["ser2net"] = services["ser2net"] && listening(cfg.GRBL.Port)
-	services["laserbridged"] = services["laserbridged"] && listening(cfg.GRBL.Port)
+	// And whichever one is laserbridged has to still be answering. A wedged
+	// daemon keeps its listening socket - the kernel accepts on its behalf -
+	// so the port alone proves nothing, and reporting a bridge that has
+	// stopped supervising the machine as "running" is the wrong answer.
+	services["laserbridged"] = services["laserbridged"] && listening(cfg.GRBL.Port) &&
+		// Only asked when it is the backend in charge: with ser2net selected
+		// there is nothing at the other end of that socket, and dialling it on
+		// every status poll is work for no answer.
+		(cfg.GRBL.Backend != config.BackendLaserbridged ||
+			s.BridgeWatch == nil || s.BridgeWatch.Responsive())
 	services["ustreamer"] = services["ustreamer"] && listening(cfg.Camera.Port)
 	version := readTrimmed(s.VersionPath)
 	if version == "" {

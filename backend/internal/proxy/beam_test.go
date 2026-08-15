@@ -104,13 +104,20 @@ func (c *controllerSim) handle(b byte) {
 		_, _ = c.controller.Write([]byte(report + ">\r\n"))
 	case feedHold:
 		c.holds++
-		c.state = "Hold:0"
+		// GRBL enters HOLD from a cycle or a jog. From Idle there is no motion
+		// to suspend and the command is ignored - which is the whole reason
+		// this simulator models the state machine rather than just setting the
+		// state: getting this wrong made a green test out of a ladder whose
+		// bottom two rungs do nothing.
+		if c.state == "Run" || c.state == "Jog" {
+			c.state = "Hold:0"
+		}
 	case spindleStop:
-		// The real one is a toggle; here it only ever stops, because a test
-		// that let it start the laser would be describing a bug rather than
-		// catching one.
 		c.stops++
-		if !c.ignoreStop {
+		// The override acts only in HOLD. It is also a toggle; here it only
+		// ever stops, because a test that let it start the laser would be
+		// describing a bug rather than catching one.
+		if c.state == "Hold:0" && !c.ignoreStop {
 			c.beam = false
 		}
 	case softReset:
@@ -186,7 +193,7 @@ func TestHoldEscalatesWhenTheBeamIsStillOn(t *testing.T) {
 		c.OnDisconnect = DisconnectHold
 	})
 	client.Close()
-	waitForIntervention(t, bridge, "stopped the spindle output")
+	waitForIntervention(t, bridge, "stopping the spindle output")
 
 	holds, stops, resets := sim.counts()
 	if holds != 1 || stops != 1 {
@@ -306,17 +313,41 @@ func TestWatchdogStopsAStationaryBeamWithTheClientStillConnected(t *testing.T) {
 	defer client.Close()
 	sim.set("Idle", true)
 
-	// Waiting for the escalation, not for the feed hold that precedes it: the
-	// hold is only the first rung and mentions the same reason.
-	waitForIntervention(t, bridge, "stopped the spindle output")
-	if _, stops, _ := sim.counts(); stops == 0 {
-		t.Error("the beam was left on")
-	}
+	// A machine standing still cannot be reached by a feed hold or by the
+	// spindle-stop override - GRBL ignores the first from Idle and the second
+	// outside a hold - so the only rung that helps here is the last one.
+	waitForIntervention(t, bridge, "soft reset")
 	sim.mu.Lock()
 	beam := sim.beam
 	sim.mu.Unlock()
 	if beam {
 		t.Error("the laser is still on")
+	}
+}
+
+func TestAStandingMachineIsResetRatherThanCoaxed(t *testing.T) {
+	// The rung that does nothing is worse than no rung: a feed hold from Idle
+	// and a spindle-stop outside a hold are both ignored by GRBL, so trying
+	// them first only means another second of beam.
+	sim, bridge, client := startWithSim(t, true, true, func(c *Config) {
+		c.OnDisconnect = DisconnectHold
+	})
+	// The bridge has to have seen the machine standing still; changing the
+	// controller without letting anyone ask about it proves nothing.
+	sim.set("Idle", true)
+	if _, err := client.Write([]byte("?")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return bridge.Status().Machine.State == "Idle" }, "the machine to report Idle")
+	client.Close()
+
+	waitForIntervention(t, bridge, "nothing gentler reaches it")
+	holds, stops, resets := sim.counts()
+	if holds != 0 || stops != 0 {
+		t.Errorf("tried %d holds and %d spindle stops on a standing machine; both are ignored", holds, stops)
+	}
+	if resets != 1 {
+		t.Errorf("resets = %d, want exactly one", resets)
 	}
 }
 
@@ -411,7 +442,8 @@ func TestNoSecondHoldOnAMachineAlreadyMadeSafe(t *testing.T) {
 		c.BeamGrace = time.Hour
 	})
 	sim.set("Idle", true)
-	waitForIntervention(t, bridge, "stopped the spindle output")
+	// A standing machine can only be reached by the last rung.
+	waitForIntervention(t, bridge, "soft reset")
 	holdsBefore, _, _ := sim.counts()
 
 	client.Close()
@@ -420,5 +452,44 @@ func TestNoSecondHoldOnAMachineAlreadyMadeSafe(t *testing.T) {
 
 	if holds, _, _ := sim.counts(); holds != holdsBefore {
 		t.Errorf("held a machine that was already standing still with the beam off (%d then %d)", holdsBefore, holds)
+	}
+}
+
+func TestTheWatchdogKeepsWatchingWhileSomethingElseIsBusy(t *testing.T) {
+	// The watchdog and the disconnect handler can reach for the machine at the
+	// same moment, and only one may have it. What the waiting one must not do
+	// is forget how long the beam has been on: restarting the grace period on
+	// every blocked look means that after a long intervention the beam gets a
+	// fresh grace period before anything examines it again - exactly when it
+	// has already been on too long.
+	//
+	// So the measure is how quickly it acts once the lock frees, not whether
+	// it acts at all. Long grace, longer hold: with the timers kept, the very
+	// next look acts; with them reset, it waits another two seconds first.
+	const grace = 2 * time.Second
+	sim, bridge, client := startWithSim(t, true, true, func(c *Config) {
+		c.OnDisconnect = DisconnectHold
+		c.IdlePoll = 100 * time.Millisecond
+		c.StationaryBeam = grace
+		c.BeamGrace = grace
+		c.HoldSettle = 200 * time.Millisecond
+	})
+	defer client.Close()
+	sim.set("Idle", true)
+
+	bridge.interveneMu.Lock()
+	time.Sleep(grace + time.Second)
+	if _, _, resets := sim.counts(); resets != 0 {
+		t.Fatalf("something acted while the lock was held (%d resets)", resets)
+	}
+
+	released := time.Now()
+	bridge.interveneMu.Unlock()
+	waitForIntervention(t, bridge, "soft reset")
+	// With the timers kept this is one tick plus the ladder; with them reset
+	// it is a whole grace period. Half of one separates the two comfortably.
+	if waited := time.Since(released); waited > grace/2 {
+		t.Errorf("acted %s after the lock freed; the beam had already been on for %s and the "+
+			"wait suggests the clock was restarted", waited.Round(time.Millisecond), grace)
 	}
 }

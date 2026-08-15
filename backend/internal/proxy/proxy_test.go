@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net"
@@ -60,12 +61,12 @@ func startBridgeWith(t *testing.T, adjust func(*Config)) (controller *os.File, a
 	adjust(&settings)
 	bridge = New(settings, nil)
 
-	done := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
 	ready := make(chan struct{})
 	finished := make(chan struct{})
 	go func() {
 		defer close(finished)
-		if err := bridge.Run(done, ready); err != nil {
+		if err := bridge.Run(ctx, ready); err != nil {
 			t.Errorf("bridge stopped: %v", err)
 		}
 	}()
@@ -76,7 +77,7 @@ func startBridgeWith(t *testing.T, adjust func(*Config)) (controller *os.File, a
 	}
 
 	t.Cleanup(func() {
-		close(done)
+		cancel()
 		<-finished
 		// Closing twice is harmless and lets a test close it early to
 		// simulate the adapter being unplugged.
@@ -276,13 +277,13 @@ func TestStatusSocketReportsTheBridge(t *testing.T) {
 
 	socketPath := filepath.Join(t.TempDir(), "laserbridged.sock")
 	socket := NewStatusSocket(socketPath, bridge)
-	done := make(chan struct{})
+	socketCtx, cancelSocket := context.WithCancel(context.Background())
 	go func() {
-		if err := socket.Serve(done); err != nil {
+		if err := socket.Serve(socketCtx); err != nil {
 			t.Errorf("status socket: %v", err)
 		}
 	}()
-	t.Cleanup(func() { close(done) })
+	t.Cleanup(cancelSocket)
 
 	waitFor(t, func() bool {
 		_, err := os.Stat(socketPath)
@@ -386,12 +387,12 @@ func TestStateMovesOnEvenWithoutADevice(t *testing.T) {
 		Port:        port,
 		DeviceRetry: 20 * time.Millisecond,
 	}, nil)
-	done := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
 	ready := make(chan struct{})
 	finished := make(chan struct{})
-	go func() { defer close(finished); _ = bridge.Run(done, ready) }()
+	go func() { defer close(finished); _ = bridge.Run(ctx, ready) }()
 	<-ready
-	t.Cleanup(func() { close(done); <-finished })
+	t.Cleanup(func() { cancel(); <-finished })
 
 	if state := waitForState(bridge, StateWaitingForDevice); state != StateWaitingForDevice {
 		t.Fatalf("state = %s, want WAITING_FOR_DEVICE", state)
@@ -683,17 +684,17 @@ func TestDeviceIsPickedUpWhenItComesBack(t *testing.T) {
 		Device: link, Baudrate: 115200, Port: port,
 		DeviceRetry: 20 * time.Millisecond, OnDisconnect: DisconnectNone,
 	}, nil)
-	done := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
 	ready := make(chan struct{})
 	finished := make(chan struct{})
 	go func() {
 		defer close(finished)
-		if err := bridge.Run(done, ready); err != nil {
+		if err := bridge.Run(ctx, ready); err != nil {
 			t.Errorf("bridge stopped: %v", err)
 		}
 	}()
 	<-ready
-	t.Cleanup(func() { close(done); <-finished })
+	t.Cleanup(func() { cancel(); <-finished })
 
 	waitFor(t, func() bool { return bridge.Status().Device != "" }, "the first device to be opened")
 	if _, err := first.Write([]byte("<Run|MPos:9.000,9.000,0.000>\r\n")); err != nil {
@@ -771,15 +772,15 @@ func TestShutdownDuringStartupDoesNotHang(t *testing.T) {
 			Device: devicePath, Baudrate: 115200, Port: port,
 			DeviceRetry: time.Millisecond, IdlePoll: time.Hour, BeamGrace: time.Hour,
 		}, nil)
-		done := make(chan struct{})
+		ctx, cancel := context.WithCancel(context.Background())
 		ready := make(chan struct{})
 		finished := make(chan struct{})
 		go func() {
 			defer close(finished)
-			_ = bridge.Run(done, ready)
+			_ = bridge.Run(ctx, ready)
 		}()
 		<-ready
-		close(done)
+		cancel()
 
 		select {
 		case <-finished:

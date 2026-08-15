@@ -8,6 +8,10 @@ command_user="root:root"
 supervisor="supervise-daemon"
 respawn_delay=3
 respawn_max=0
+# Escalate when the daemon will not go quietly. A bridge that has stopped
+# supervising the machine has to be replaceable, and a stop that waits forever
+# for a process that cannot answer is a stop that never finishes.
+retry="TERM/8/KILL/4"
 output_logger="logger -t laserbridged"
 error_logger="logger -t laserbridged"
 

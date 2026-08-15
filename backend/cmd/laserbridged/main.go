@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 	"os/signal"
@@ -54,25 +55,23 @@ func run(logger *log.Logger) error {
 		StationaryBeam: time.Duration(cfg.GRBL.StationaryBeamSeconds) * time.Second,
 	}, logger)
 
-	done := make(chan struct{})
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 	go func() {
-		<-signals
+		<-ctx.Done()
 		logger.Printf("shutting down")
-		close(done)
 	}()
 
 	socket := proxy.NewStatusSocket(socketPath, bridge)
 	go func() {
-		if err := socket.Serve(done); err != nil {
+		if err := socket.Serve(ctx); err != nil {
 			logger.Printf("status socket: %v", err)
 		}
 	}()
 
 	logger.Printf("bridging %s at %d baud to TCP port %d; on disconnect: %s",
 		cfg.GRBL.Device, cfg.GRBL.Baudrate, cfg.GRBL.Port, cfg.GRBL.OnDisconnect)
-	return bridge.Run(done, nil)
+	return bridge.Run(ctx, nil)
 }
 
 func getenv(key, fallback string) string {

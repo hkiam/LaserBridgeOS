@@ -151,9 +151,28 @@ func serve(listen, webRoot string, store *config.Store, manager *lbruntime.Manag
 	logger := log.New(os.Stdout, "laserbridge-web: ", log.LstdFlags)
 	updater := newUpdater(manager)
 	versionPath := updater.VersionPath
+	bridgeSocket := getenv("LASERBRIDGE_BRIDGE_SOCKET", "/run/laserbridge/laserbridged.sock")
+
+	// The GRBL bridge is the process whose hanging matters most and the one
+	// thing it cannot notice about itself. This is a different process, so it
+	// can. Only with the privileges to do something about it.
+	var watch *lbruntime.BridgeWatch
+	if runner != nil {
+		watch = &lbruntime.BridgeWatch{
+			Store: store, Runner: runner, SocketPath: bridgeSocket, Logger: logger,
+			// Shorter than the default: the status page asks this on every
+			// poll, and a page that takes two seconds to load because the
+			// bridge is wedged is the page you need at that moment.
+			Timeout: time.Second,
+		}
+		ctx, stop := context.WithCancel(context.Background())
+		defer stop()
+		go watch.Watch(ctx)
+	}
+
 	server := &http.Server{
 		Addr:              listen,
-		Handler:           (&api.Server{Store: store, Runtime: manager, Runner: runner, Updater: updater, WebRoot: filepath.Clean(webRoot), VersionPath: versionPath, Logger: logger}).Handler(),
+		Handler:           (&api.Server{Store: store, Runtime: manager, Runner: runner, Updater: updater, WebRoot: filepath.Clean(webRoot), VersionPath: versionPath, BridgeSocket: bridgeSocket, BridgeWatch: watch, Logger: logger}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Minute,
 		WriteTimeout:      10 * time.Minute,

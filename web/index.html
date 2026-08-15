@@ -144,7 +144,7 @@
             <label>Stop a stationary beam after<input name="stationary_beam_seconds" type="number" min="0" max="600" required><small>Seconds. 0 is off. Must be longer than your longest pierce, which is a stationary burn on purpose.</small></label>
             <label>Baud rate<select name="baudrate"><option>9600</option><option>19200</option><option>38400</option><option>57600</option><option selected>115200</option><option>230400</option><option>250000</option><option>500000</option><option>1000000</option></select></label>
             <label>TCP port<input name="port" type="number" min="1" max="65535" required></label>
-            <label>Maximum clients<input name="max_connections" type="number" min="1" max="16" required></label>
+            <label>Maximum clients<input name="max_connections" type="number" min="1" max="16" required><small>ser2net only. laserbridged serves one on purpose.</small></label>
             <label class="toggle"><input name="reconnect" type="checkbox"><span>Reconnect when device returns</span></label>
             <label class="toggle"><input name="kick_old_user" type="checkbox"><span>Kick old client on new connection</span></label>
           </div>

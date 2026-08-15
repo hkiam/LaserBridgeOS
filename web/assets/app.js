@@ -169,7 +169,12 @@ async function loadJournal() {
     row.className = `journal-row journal-${event.kind}`;
 
     const when = document.createElement('time');
-    when.textContent = new Date(event.unix * 1000).toLocaleString();
+    // The wall clock depends on an RTC battery and a network that may not be
+    // there. When it is obviously wrong, the uptime at least keeps the order
+    // of events honest.
+    when.textContent = event.unix > 1600000000
+      ? new Date(event.unix * 1000).toLocaleString()
+      : `+${duration(event.uptime_seconds || 0)} after boot`;
     const kind = document.createElement('span');
     kind.className = 'journal-kind';
     kind.textContent = event.kind;

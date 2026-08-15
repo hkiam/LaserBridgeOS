@@ -31,13 +31,16 @@ type GRBL struct {
 	// ser2net is the fallback, not a transitional measure (ADR 0011) - and
 	// exactly one runs at a time, because two processes on one serial port is
 	// the failure this bridge exists to prevent.
-	Backend        string `json:"backend"`
-	Device         string `json:"device"`
-	Baudrate       int    `json:"baudrate"`
-	Port           int    `json:"port"`
-	MaxConnections int    `json:"max_connections"`
-	Reconnect      bool   `json:"reconnect"`
-	KickOldUser    bool   `json:"kick_old_user"`
+	Backend  string `json:"backend"`
+	Device   string `json:"device"`
+	Baudrate int    `json:"baudrate"`
+	Port     int    `json:"port"`
+	// MaxConnections applies to ser2net only. laserbridged serves one client
+	// by design - two applications steering one laser is the failure it exists
+	// to prevent - and ignores this.
+	MaxConnections int  `json:"max_connections"`
+	Reconnect      bool `json:"reconnect"`
+	KickOldUser    bool `json:"kick_old_user"`
 	// OnDisconnect is what the bridge does when the client vanishes while the
 	// machine is moving: "none", "hold" or "reset". This is a convenience, not
 	// a safety device - see docs/adr/0010.

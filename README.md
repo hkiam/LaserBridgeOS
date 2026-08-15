@@ -289,9 +289,17 @@ Reading along happens on a copy of what has already gone to the client, so a
 misparsed line can produce a wrong number on the status page but never a wrong
 byte at the controller.
 
-`controller_silent` is set when a controller that had been answering stops
-while a client is attached. It is reported, never acted on: GRBL only speaks
-when spoken to, so a quiet link usually means the client has nothing to ask.
+`controller_silent` is set when the controller stops answering. Since the
+appliance asks for a status report whenever nobody else has for a second, that
+is a real absence rather than nobody having asked - so it also catches a
+controller that never answers at all: wrong device, wrong baud rate, dead
+board. It is reported, never acted on.
+
+`laser_mode` is GRBL's `$32`, picked up from the settings dump LightBurn
+requests when it connects. The appliance does not ask for it itself: `$$` is a
+queued command and GRBL answers those with `ok`, and an `ok` the client did not
+earn desynchronises its flow control - which does not fail a job, it corrupts
+one.
 
 ### When the client disappears mid-job
 
@@ -319,6 +327,10 @@ and the beam keeps burning where it stands. A soft reset has no such
 dependency: it switches the output off unconditionally. And the job it ends
 was over anyway, because LightBurn streams — when the connection dies there is
 nothing left to resume into.
+
+A machine that is already standing still skips the two lower rungs: GRBL
+ignores a feed hold from Idle and the spindle-stop override outside a hold, so
+for a laser burning where it stands only the soft reset does anything at all.
 
 Choosing `hold` gets the reversible version, with the check that makes it
 honest. GRBL fills the accessory field of its status report from the actual
@@ -438,6 +450,28 @@ $ nc laserbridge.local 2300
 It is off unless a port is set. Until now, watching what LightBurn and the
 controller said to each other meant taking the port away from LightBurn, which
 changes the situation you were investigating.
+
+### Watching the bridge itself
+
+The bridge supervises the machine, which makes its own hanging the failure that
+matters most - and the one thing it cannot notice about itself. OpenRC restarts
+a process that exits, not one that deadlocks, and a wedged daemon keeps its
+listening socket because the kernel accepts on its behalf.
+
+So the web backend asks it, every fifteen seconds, whether it still knows what
+it is doing. Three unanswered questions and it restarts it; not more than once
+in five minutes, because a restart costs the client its connection. A bridge
+that is not answering is reported as not running, rather than as running.
+
+That is only worth doing because a restart no longer resets the controller.
+
+The guarantee is narrower than the mechanism suggests, and worth stating: a
+bridge that **dies** is respawned by OpenRC. A bridge that **hangs** is
+restarted, if OpenRC can stop it — a process frozen at the kernel level cannot
+be, and then the appliance can only report it. What it will not do is leave the
+bridge stopped: a restart that ends that way is followed by a start, because
+the configuration says which backend should be running and that is the
+authority.
 
 ### The wrong baud rate
 
