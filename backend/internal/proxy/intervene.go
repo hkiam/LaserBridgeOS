@@ -219,6 +219,138 @@ func oneLine(text string) string {
 	return strings.NewReplacer("[", "(", "]", ")", "\r", " ", "\n", " ").Replace(text)
 }
 
+// The opening questions, and the window they have to fit in.
+//
+// probeGrace bounds how long a connecting client waits for them; probeAnswer
+// bounds how long the questions themselves wait for an answer.
+const (
+	probeGrace  = 3 * time.Second
+	probeAnswer = 1500 * time.Millisecond
+)
+
+// probeController asks the controller what it is, in the one window where that
+// question is safe to ask.
+//
+// ADR 0013 forbids the bridge from injecting anything that GRBL answers with an
+// "ok", and $$ and $I are exactly that. Senders count those "ok"s to know how
+// much of the 128-byte receive buffer is free; one that the sender never earned
+// makes it believe a line was accepted that was not, and it then writes past the
+// end of the buffer. Characters are dropped and the G-code the machine runs is
+// not the G-code that was sent.
+//
+// The ADR also rejected the obvious guard, "only when no client is attached",
+// and it was right to: the answer comes back fifty milliseconds later, by which
+// time a client may have connected and be handed an "ok" it did not earn.
+//
+// What makes it safe is not a check but the order of events. The questions are
+// asked in the moment after the serial port opens, and the accept loop does not
+// hand any connection to serveClient until they are done. A client can be
+// accepted at the TCP level during that window, but b.client stays nil, so the
+// dump is forwarded to nobody and the connection starts on a clean slate with
+// its line accounting untouched.
+//
+// The prize is $32. Everything the appliance does about an unattended laser
+// turns on whether laser mode is on, and until now it was learned only if a
+// client happened to ask - LightBurn sends $I and $#, and on the machine this
+// was written for it never sent $$, so the setting stayed unknown and the best
+// informed branch of the ladder never ran.
+func (b *Bridge) probeController(port *serial.Port) {
+	defer b.finishProbe()
+	if b.currentClient() != nil || b.aborted() {
+		return
+	}
+	// Nothing is asked of a device that has not already answered like GRBL.
+	// $$ is meaningless to a Ruida or a Trocen board and there is no telling
+	// what it means to one nobody has tried, whereas a well-formed status
+	// report is proof of what is at the other end. It costs no extra bytes to
+	// wait for one: the watchdog polls whenever nobody else is, so the question
+	// has already been asked by the time this is looking.
+	if !b.answersLikeGRBL() {
+		return
+	}
+	for _, question := range []string{"$I\n", "$$\n"} {
+		if b.currentClient() != nil || b.aborted() {
+			return
+		}
+		if _, err := port.Write([]byte(question)); err != nil {
+			return
+		}
+		b.monitors.send('*', []byte(question))
+	}
+
+	deadline := time.NewTimer(probeAnswer)
+	defer deadline.Stop()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline.C:
+			b.noteController()
+			return
+		case <-ticker.C:
+			if b.currentClient() != nil || b.aborted() {
+				return
+			}
+			if b.observer.Machine().LaserMode != grbl.SettingUnknown {
+				b.noteController()
+				return
+			}
+		}
+	}
+}
+
+// answersLikeGRBL waits for a status report that parsed, which is the only
+// evidence available that the thing on the serial port is what we think.
+func (b *Bridge) answersLikeGRBL() bool {
+	deadline := time.NewTimer(probeAnswer)
+	defer deadline.Stop()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline.C:
+			return false
+		case <-ticker.C:
+			if b.currentClient() != nil || b.aborted() {
+				return false
+			}
+			if b.observer.Gibberish() {
+				return false
+			}
+			if b.observer.Machine().Reports > 0 {
+				return true
+			}
+		}
+	}
+}
+
+// noteController writes down what the controller turned out to be. The record
+// then says which firmware every later entry was talking to.
+func (b *Bridge) noteController() {
+	machine := b.observer.Machine()
+	what := "controller did not identify itself"
+	if machine.Firmware != "" {
+		what = "controller: " + machine.Firmware
+	}
+	if machine.Options != "" {
+		what += " (" + machine.Options + ")"
+	}
+	switch machine.LaserMode {
+	case grbl.SettingOn:
+		what += "; laser mode ($32) is on"
+	case grbl.SettingOff:
+		what += "; laser mode ($32) is OFF - a feed hold will not switch the output off"
+	default:
+		what += "; laser mode ($32) unknown"
+	}
+	b.logf("%s", what)
+	b.note("device", what)
+}
+
+func (b *Bridge) finishProbe() {
+	b.probeOnce.Do(func() { close(b.probed) })
+}
+
 // beamPollInterval is how fast the bridge asks while it is waiting for the
 // controller to mention its outputs. Only ever during an intervention, when the
 // client has been let go, so it competes with nobody.
