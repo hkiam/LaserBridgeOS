@@ -125,6 +125,9 @@ async function loadMachine() {
     : '—');
   setText('#machine-feed', machine.state ? `${machine.feed || 0} mm/min · ${machine.spindle || 0}` : '—');
   setText('#machine-bytes', `${bytes(bridge.rx_bytes)} in · ${bytes(bridge.tx_bytes)} out`);
+  // Three states, and "not known" is one of them: a page that showed an
+  // unreported laser as off would be asserting the one thing nobody may guess.
+  setText('#machine-beam', {on: 'ON', off: 'off'}[machine.beam] || 'not reported');
 
   // Anything the bridge did on its own accord is worth saying plainly: an
   // operator who finds a paused machine should not have to guess why.
@@ -133,9 +136,11 @@ async function loadMachine() {
   // page, so saying anything else while that is true would mislead.
   const text = bridge.gibberish
     ? 'The controller is answering with something that is not GRBL — check the baud rate.'
-    : bridge.controller_silent
-      ? 'The controller has stopped answering while a client is connected.'
-      : bridge.last_intervention || bridge.last_error || '';
+    : machine.laser_mode === 'off'
+      ? 'Laser mode ($32) is off: this controller treats the laser as a spindle, and a feed hold does not switch a spindle off. Keep "on disconnect" on soft reset.'
+      : bridge.controller_silent
+        ? 'The controller has stopped answering while a client is connected.'
+        : bridge.last_intervention || bridge.last_error || '';
   note.textContent = text;
   note.hidden = !text;
 }
@@ -212,6 +217,7 @@ async function loadConfig() {
   grbl.backend.value = config.grbl.backend;
   grbl.on_disconnect.value = config.grbl.on_disconnect;
   grbl.monitor_port.value = config.grbl.monitor_port;
+  grbl.stationary_beam_seconds.value = config.grbl.stationary_beam_seconds;
   const camera = $('#camera-form').elements;
   camera.device.value = config.camera.device;
   camera.format.value = config.camera.format;
@@ -288,7 +294,7 @@ $('#journal-refresh').addEventListener('click', async () => {
 $('#grbl-form').addEventListener('submit', async event => {
   event.preventDefault();
   const f = event.currentTarget.elements;
-  Object.assign(config.grbl, {device: f.device.value, baudrate: Number(f.baudrate.value), port: Number(f.port.value), max_connections: Number(f.max_connections.value), reconnect: f.reconnect.checked, kick_old_user: f.kick_old_user.checked, backend: f.backend.value, on_disconnect: f.on_disconnect.value, monitor_port: Number(f.monitor_port.value)});
+  Object.assign(config.grbl, {device: f.device.value, baudrate: Number(f.baudrate.value), port: Number(f.port.value), max_connections: Number(f.max_connections.value), reconnect: f.reconnect.checked, kick_old_user: f.kick_old_user.checked, backend: f.backend.value, on_disconnect: f.on_disconnect.value, monitor_port: Number(f.monitor_port.value), stationary_beam_seconds: Number(f.stationary_beam_seconds.value)});
   try { await saveConfig('GRBL settings saved'); } catch (error) { toast(error.message, true); }
 });
 $('#camera-form').addEventListener('submit', async event => {

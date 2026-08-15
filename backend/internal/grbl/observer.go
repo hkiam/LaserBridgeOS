@@ -31,6 +31,10 @@ type Observer struct {
 	recognised int
 
 	machine Machine
+	// lastReport is when the controller last said anything, at better than the
+	// one-second resolution the JSON carries. A watchdog deciding whether to
+	// ask a question cannot work in whole seconds.
+	lastReport time.Time
 	// now is swappable so tests need not sleep.
 	now func() time.Time
 
@@ -43,6 +47,29 @@ type Observer struct {
 	// job and nothing is learned by recording them.
 	OnReport func(Report, Machine)
 }
+
+// Beam is what the controller says about its own laser output.
+//
+// Three values, and the third one matters as much as the other two. Deciding
+// what to do with an unattended machine on the assumption that the beam is off
+// is exactly the mistake worth designing against, so "not known" is a value
+// rather than a default of "off".
+type Beam string
+
+const (
+	BeamUnknown Beam = ""
+	BeamOn      Beam = "on"
+	BeamOff     Beam = "off"
+)
+
+// Setting is a GRBL setting whose value the appliance has seen, or has not.
+type Setting string
+
+const (
+	SettingUnknown Setting = ""
+	SettingOn      Setting = "on"
+	SettingOff     Setting = "off"
+)
 
 // Machine is the current reading of the controller. Every field may be absent:
 // a controller that has said nothing yet has no state, and asking it to
@@ -66,6 +93,15 @@ type Machine struct {
 	// Resets counts welcome banners seen. The controller resetting underneath
 	// a running job is worth noticing.
 	Resets int `json:"resets"`
+	// Beam is whether the laser output is on, taken from the accessory field
+	// of a status report - which GRBL fills from the actual output rather than
+	// from the modal state, so it is evidence and not inference.
+	Beam Beam `json:"beam"`
+	// LaserMode is GRBL setting $32, seen in a settings dump. It decides
+	// whether a feed hold switches the beam off: with laser mode off, the
+	// output is a spindle, and a feed hold deliberately leaves a spindle
+	// running.
+	LaserMode Setting `json:"laser_mode"`
 }
 
 func NewObserver() *Observer {
@@ -121,7 +157,7 @@ func (o *Observer) flush() (Report, bool) {
 	report := Parse(text)
 	o.apply(report)
 	switch report.Kind {
-	case "alarm", "error", "welcome", "message":
+	case "alarm", "error", "welcome", "message", "setting":
 		return report, true
 	case "ok":
 		// Not interesting in itself, but it answers for exactly one line the
@@ -142,7 +178,8 @@ func (o *Observer) apply(report Report) {
 	if report.Kind != "unknown" {
 		o.recognised++
 	}
-	o.machine.LastReportUnix = o.now().Unix()
+	o.lastReport = o.now()
+	o.machine.LastReportUnix = o.lastReport.Unix()
 	switch report.Kind {
 	case "status":
 		o.machine.State = report.State
@@ -155,6 +192,26 @@ func (o *Observer) apply(report Report) {
 		if report.State != StateAlarm {
 			o.machine.AlarmCode = 0
 		}
+		// Only a report that carried Ov: says anything about the outputs, and
+		// then it says it definitively: GRBL emits the accessory field beside
+		// Ov: whenever anything is on, so Ov: without it means everything is
+		// off. A report without Ov: leaves the previous reading standing
+		// rather than being read as "off".
+		if report.HasOverrides {
+			if strings.ContainsAny(report.Accessory, "SC") {
+				o.machine.Beam = BeamOn
+			} else {
+				o.machine.Beam = BeamOff
+			}
+		}
+	case "setting":
+		if report.Setting == LaserMode {
+			if strings.TrimSpace(report.SettingValue) == "0" {
+				o.machine.LaserMode = SettingOff
+			} else {
+				o.machine.LaserMode = SettingOn
+			}
+		}
 	case "alarm":
 		o.machine.State = StateAlarm
 		o.machine.AlarmCode = report.Code
@@ -165,8 +222,16 @@ func (o *Observer) apply(report Report) {
 	case "welcome":
 		// A reset clears everything the controller knew, so the reading has to
 		// forget it too rather than show coordinates from before the reset.
-		resets := o.machine.Resets + 1
-		o.machine = Machine{Resets: resets, LastReportUnix: o.machine.LastReportUnix, State: StateUnknown}
+		// A reset turns the outputs off - that is what mc_reset does - and
+		// $32 is a stored setting that a reset does not change, so both are
+		// carried over rather than forgotten with everything else.
+		o.machine = Machine{
+			Resets:         o.machine.Resets + 1,
+			LastReportUnix: o.machine.LastReportUnix,
+			State:          StateUnknown,
+			Beam:           BeamOff,
+			LaserMode:      o.machine.LaserMode,
+		}
 	}
 }
 
@@ -189,6 +254,18 @@ func (o *Observer) Silent(for_ time.Duration) bool {
 	return o.now().Sub(time.Unix(o.machine.LastReportUnix, 0)) > for_
 }
 
+// Quiet reports whether nothing has been heard for the given span. Unlike
+// Silent, a controller that has never spoken counts as quiet: the caller here
+// is deciding whether to ask, not whether to worry.
+func (o *Observer) Quiet(for_ time.Duration) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.lastReport.IsZero() {
+		return true
+	}
+	return o.now().Sub(o.lastReport) > for_
+}
+
 // Gibberish reports whether the controller is answering with something that is
 // not GRBL at all.
 //
@@ -203,12 +280,22 @@ func (o *Observer) Gibberish() bool {
 	return o.recognised == 0 && o.garbage >= 5
 }
 
+// ForgetBeam drops what was known about the laser output, so the next question
+// is answered by what the controller says now rather than by what it said
+// before something was done to it.
+func (o *Observer) ForgetBeam() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.machine.Beam = BeamUnknown
+}
+
 // Reset forgets everything, for when the port is reopened and the reading
 // would otherwise describe a controller that is no longer there.
 func (o *Observer) Reset() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.machine = Machine{}
+	o.lastReport = time.Time{}
 	o.line.Reset()
 	o.dropped = false
 	o.garbage = 0

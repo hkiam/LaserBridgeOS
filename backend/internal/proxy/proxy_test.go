@@ -50,6 +50,12 @@ func startBridgeWith(t *testing.T, adjust func(*Config)) (controller *os.File, a
 		Port:        port,
 		DeviceRetry: 20 * time.Millisecond,
 		HoldSettle:  500 * time.Millisecond,
+		// The standing supervision is off unless a test asks for it. It polls
+		// the controller whenever no client is attached, and a test reading
+		// raw bytes to check that a client's traffic crosses unchanged would
+		// otherwise find the appliance's own status requests mixed into them.
+		IdlePoll:  time.Hour,
+		BeamGrace: time.Hour,
 	}
 	adjust(&settings)
 	bridge = New(settings, nil)
@@ -538,14 +544,15 @@ func TestResetWaitsForTheMachineToStop(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Only now the reset. There may be further status requests in between.
+	// Only now the reset. Status requests and the settings probe may arrive in
+	// between; neither commands anything.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		got := mustRead(t, controller, 1)
 		if got[0] == softReset {
 			break
 		}
-		if got[0] != statusReq {
+		if got[0] != statusReq && got[0] != '$' && got[0] != '\n' {
 			t.Fatalf("unexpected byte %q while waiting for the soft reset", got)
 		}
 		if time.Now().After(deadline) {
@@ -616,12 +623,15 @@ func TestControllerSilenceIsReportedNotActedOn(t *testing.T) {
 	}
 }
 
-func TestSilenceNeedsAClient(t *testing.T) {
-	// Nobody attached means nobody is asking, so a quiet controller is
-	// entirely expected and must not be flagged.
+func TestSilenceIsReportedWithNobodyAttached(t *testing.T) {
+	// This used to need a client, on the reasoning that GRBL only speaks when
+	// spoken to, so a quiet controller with nobody connected meant nothing.
+	// The appliance now does the asking itself whenever nobody else is, which
+	// turns that silence into an answer: the controller is not responding.
 	controller, address, bridge := startBridgeWith(t, func(c *Config) {
 		c.OnDisconnect = DisconnectNone
 		c.SilenceAfter = 500 * time.Millisecond
+		c.IdlePoll = 50 * time.Millisecond
 	})
 	client, err := net.Dial("tcp", address)
 	if err != nil {
@@ -632,10 +642,21 @@ func TestSilenceNeedsAClient(t *testing.T) {
 	client.Close()
 	waitForState(bridge, StateListening)
 
-	time.Sleep(time.Second)
-	if bridge.Status().ControllerSilent {
-		t.Error("a controller nobody is talking to was reported as silent")
-	}
+	waitFor(t, func() bool { return bridge.Status().ControllerSilent },
+		"a controller that stopped answering the appliance's own polling to be reported")
+}
+
+func TestAControllerThatNeverAnswersIsReported(t *testing.T) {
+	// A wrong device, a wrong baud rate, or a dead board. Nothing ever arrives,
+	// so there is no "last report" to have gone stale - which is exactly how
+	// this used to slip through as merely quiet.
+	_, _, bridge := startBridgeWith(t, func(c *Config) {
+		c.OnDisconnect = DisconnectNone
+		c.SilenceAfter = 300 * time.Millisecond
+		c.IdlePoll = 50 * time.Millisecond
+	})
+	waitFor(t, func() bool { return bridge.Status().ControllerSilent },
+		"a controller that has never said anything to be reported")
 }
 
 func TestDeviceIsPickedUpWhenItComesBack(t *testing.T) {
@@ -719,5 +740,52 @@ func TestDeviceIsPickedUpWhenItComesBack(t *testing.T) {
 	}
 	if got := mustRead(t, second, 3); string(got) != "$H\n" {
 		t.Fatalf("the new device received %q", got)
+	}
+}
+
+func TestShutdownDuringStartupDoesNotHang(t *testing.T) {
+	// Stopping the daemon before the serial port has been published leaves the
+	// shutdown with nothing to close, and the device reader parked in a read
+	// that nothing will ever interrupt. On the appliance that is an
+	// rc-service stop that never returns.
+	//
+	// Run reports itself ready as soon as it is listening, which is before the
+	// goroutine that opens the port has necessarily been scheduled at all, so
+	// anything that stops the bridge immediately afterwards can take this
+	// path. Observed once as a hung test; not reproducible on demand, so this
+	// samples the shutdown rather than pinning the window. The guard that
+	// closes it is in openPort, with the reasoning beside it.
+	for attempt := 0; attempt < 5; attempt++ {
+		controller, devicePath, err := openPTY()
+		if err != nil {
+			t.Skipf("no pseudo-terminal available: %v", err)
+		}
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := listener.Addr().(*net.TCPAddr).Port
+		listener.Close()
+
+		bridge := New(Config{
+			Device: devicePath, Baudrate: 115200, Port: port,
+			DeviceRetry: time.Millisecond, IdlePoll: time.Hour, BeamGrace: time.Hour,
+		}, nil)
+		done := make(chan struct{})
+		ready := make(chan struct{})
+		finished := make(chan struct{})
+		go func() {
+			defer close(finished)
+			_ = bridge.Run(done, ready)
+		}()
+		<-ready
+		close(done)
+
+		select {
+		case <-finished:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("attempt %d: the bridge did not stop", attempt)
+		}
+		controller.Close()
 	}
 }

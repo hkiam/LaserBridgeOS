@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/laserbridgeos/laserbridgeos/backend/internal/config"
 	"github.com/laserbridgeos/laserbridgeos/backend/internal/proxy"
@@ -48,8 +49,9 @@ func run(logger *log.Logger) error {
 		OnDisconnect:  cfg.GRBL.OnDisconnect,
 		// The record of what went wrong outlives a reboot, which is the whole
 		// point of it; /data is the only writable place on this appliance.
-		JournalPath: filepath.Join(dataDir, "laserbridge", "bridge-journal.log"),
-		MonitorPort: cfg.GRBL.MonitorPort,
+		JournalPath:    filepath.Join(dataDir, "laserbridge", "bridge-journal.log"),
+		MonitorPort:    cfg.GRBL.MonitorPort,
+		StationaryBeam: time.Duration(cfg.GRBL.StationaryBeamSeconds) * time.Second,
 	}, logger)
 
 	done := make(chan struct{})

@@ -95,6 +95,19 @@ type Report struct {
 	Code int
 	// Text is the line as received, minus the line ending.
 	Text string
+	// HasOverrides is set when a status report carried its Ov: field. GRBL
+	// sends Ov: and A: together, every tenth report or so and whenever either
+	// changes, so a report with Ov: and no accessory is positive evidence that
+	// the spindle and coolant outputs are off - and a report without Ov: says
+	// nothing about them either way.
+	HasOverrides bool
+	// Accessory is the A: field: S for spindle clockwise, C for counter-
+	// clockwise, F for flood, M for mist. On a laser, S or C means the beam is
+	// on. GRBL reads this from the actual output, not from the modal state.
+	Accessory string
+	// Setting and SettingValue carry one line of a $$ dump.
+	Setting      string
+	SettingValue string
 }
 
 // Parse reads one line. The line should already have its ending removed.
@@ -121,9 +134,18 @@ func Parse(line string) Report {
 		report.Kind = "message"
 	case strings.HasPrefix(line, "<") && strings.HasSuffix(line, ">"):
 		parseStatus(strings.TrimSuffix(strings.TrimPrefix(line, "<"), ">"), &report)
+	case strings.HasPrefix(line, "$") && strings.Contains(line, "="):
+		// One line of a $$ dump, such as "$32=1". The appliance cares about
+		// exactly one of them, but they all parse the same way.
+		report.Kind = "setting"
+		report.Setting, report.SettingValue, _ = strings.Cut(line, "=")
 	}
 	return report
 }
+
+// LaserMode is GRBL setting $32, and the answer to the question that decides
+// whether a feed hold switches the beam off.
+const LaserMode = "$32"
 
 func parseStatus(body string, report *Report) {
 	fields := strings.Split(body, "|")
@@ -163,6 +185,10 @@ func parseStatus(body string, report *Report) {
 			if numbers := parseNumbers(value); len(numbers) > 0 {
 				report.Feed = numbers[0]
 			}
+		case "Ov":
+			report.HasOverrides = true
+		case "A":
+			report.Accessory = value
 		}
 	}
 }

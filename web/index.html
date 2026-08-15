@@ -122,6 +122,7 @@
             <div><dt>Client</dt><dd id="machine-client">none</dd></div>
             <div><dt>Position</dt><dd id="machine-position">—</dd></div>
             <div><dt>Feed / power</dt><dd id="machine-feed">—</dd></div>
+            <div><dt>Laser output</dt><dd id="machine-beam">—</dd></div>
             <div><dt>Transferred</dt><dd id="machine-bytes">—</dd></div>
           </dl>
           <p class="machine-note" id="machine-note" hidden></p>
@@ -138,8 +139,9 @@
           <div class="form-grid">
             <label class="wide">Serial device<input name="device" list="serial-devices" required autocomplete="off"><datalist id="serial-devices"></datalist><small>Stable /dev/serial/by-id paths are preferred.</small></label>
             <label>Bridge service<select name="backend"><option value="ser2net">ser2net (proven)</option><option value="laserbridged">laserbridged (reports machine state)</option></select><small>Only one may hold the serial port.</small></label>
-            <label>If the client disconnects<select name="on_disconnect"><option value="none">Let the machine finish its buffer</option><option value="hold">Feed hold while moving</option><option value="reset">Feed hold, then soft reset</option></select><small>laserbridged only. Matters most with M3 constant power, where a starved stream leaves the beam on.</small></label>
+            <label>If the client disconnects<select name="on_disconnect"><option value="reset">Feed hold, then soft reset (recommended)</option><option value="hold">Feed hold, and check the beam went off</option><option value="none">Let the machine finish its buffer</option></select><small>laserbridged only. A soft reset switches the output off whatever the controller is configured like; a feed hold only does if laser mode ($32) is on.</small></label>
             <label>Read-only monitor port<input name="monitor_port" type="number" min="0" max="65535" required><small>0 is off. Shows the traffic for diagnosis without taking the port from LightBurn.</small></label>
+            <label>Stop a stationary beam after<input name="stationary_beam_seconds" type="number" min="0" max="600" required><small>Seconds. 0 is off. Must be longer than your longest pierce, which is a stationary burn on purpose.</small></label>
             <label>Baud rate<select name="baudrate"><option>9600</option><option>19200</option><option>38400</option><option>57600</option><option selected>115200</option><option>230400</option><option>250000</option><option>500000</option><option>1000000</option></select></label>
             <label>TCP port<input name="port" type="number" min="1" max="65535" required></label>
             <label>Maximum clients<input name="max_connections" type="number" min="1" max="16" required></label>

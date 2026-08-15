@@ -46,6 +46,12 @@ type GRBL struct {
 	// switches it off, which is the default: a port nobody asked for is a port
 	// nobody is watching.
 	MonitorPort int `json:"monitor_port"`
+	// StationaryBeamSeconds is how long the laser may be on without the
+	// machine moving before the bridge switches it off. Zero disables the
+	// check. It has to be longer than the longest deliberate stationary burn -
+	// piercing thick material - which is why it is a setting and not a
+	// constant.
+	StationaryBeamSeconds int `json:"stationary_beam_seconds"`
 }
 
 type Camera struct {
@@ -84,7 +90,7 @@ func Default() Config {
 			Backend: BackendSer2net,
 			Device:  "/dev/ttyUSB0", Baudrate: 115200, Port: 23,
 			MaxConnections: 1, Reconnect: true, KickOldUser: true,
-			OnDisconnect: DisconnectHold,
+			OnDisconnect: DisconnectReset, StationaryBeamSeconds: 20,
 		},
 		Camera: Camera{
 			Device: "/dev/video0", Format: "MJPEG", Resolution: "1280x720",
@@ -110,11 +116,14 @@ const (
 	// DisconnectNone forwards nothing. The machine finishes whatever is in its
 	// planner buffer, as it did before the bridge could tell the difference.
 	DisconnectNone = "none"
-	// DisconnectHold sends a feed hold, which pauses motion and switches the
-	// laser off while keeping the position - a job can be resumed afterwards.
+	// DisconnectHold sends a feed hold, then checks whether the beam actually
+	// went off and escalates if it did not. Keeps the position, and the job
+	// stays resumable when the check comes back clean.
 	DisconnectHold = "hold"
-	// DisconnectReset sends a feed hold and then a soft reset, which also
-	// clears the planner buffer. The job is over, but nothing keeps moving.
+	// DisconnectReset sends a feed hold, waits for the machine to come to
+	// rest, and then a soft reset. The default: a soft reset switches the
+	// output off unconditionally, whatever $32 says and whatever firmware is
+	// running, and a job whose client has vanished is over regardless.
 	DisconnectReset = "reset"
 )
 
@@ -148,6 +157,9 @@ func (c Config) Validate() error {
 	case DisconnectNone, DisconnectHold, DisconnectReset:
 	default:
 		problems = append(problems, "grbl.on_disconnect must be none, hold or reset")
+	}
+	if c.GRBL.StationaryBeamSeconds != 0 && (c.GRBL.StationaryBeamSeconds < 2 || c.GRBL.StationaryBeamSeconds > 600) {
+		problems = append(problems, "grbl.stationary_beam_seconds must be 0 to disable, or between 2 and 600")
 	}
 	if c.GRBL.MonitorPort != 0 {
 		if err := validatePort("grbl.monitor_port", c.GRBL.MonitorPort); err != nil {

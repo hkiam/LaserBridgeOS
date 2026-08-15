@@ -49,8 +49,9 @@ func TestRejectsUnsafeValues(t *testing.T) {
 
 func TestOlderConfigGetsSafeDisconnectDefault(t *testing.T) {
 	// A configuration written before the bridge could act on a disconnect has
-	// no such key. It must load, and it must land on the cautious setting
-	// rather than on the zero value, which is not a valid action at all.
+	// no such key. It must load, and it must land on the setting that switches
+	// the beam off whatever the controller is configured like - not on the
+	// zero value, which is not a valid action at all.
 	data, err := MarshalYAML(Default())
 	if err != nil {
 		t.Fatal(err)
@@ -65,7 +66,7 @@ func TestOlderConfigGetsSafeDisconnectDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseYAML() = %v", err)
 	}
-	if parsed.GRBL.OnDisconnect != DisconnectHold {
+	if parsed.GRBL.OnDisconnect != DisconnectReset {
 		t.Errorf("on_disconnect = %q, want %q", parsed.GRBL.OnDisconnect, DisconnectHold)
 	}
 }

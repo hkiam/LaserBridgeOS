@@ -301,14 +301,54 @@ buffer with nobody watching. `grbl.on_disconnect` decides what happens:
 | Value | Effect |
 | --- | --- |
 | `none` | Nothing. The machine finishes its buffer. |
-| `hold` (default) | A feed hold, if the machine is moving. Motion pauses, the beam goes off, the position is kept, the job can be resumed. |
-| `reset` | A feed hold, then — once the machine reports it has stopped — a soft reset. The job ends, but nothing is left moving. |
+| `hold` | A feed hold, then a check that the beam actually went off — and an escalation if it did not. Keeps the position. |
+| `reset` (default) | A feed hold, then — once the machine reports it has stopped — a soft reset. The job ends, and the output is off whatever the controller is configured like. |
 
 `reset` waits because a soft reset while the axes are still turning loses the
 position. The bridge sends `?` until GRBL reports a state that means standing
 still, and gives up after three seconds rather than wait forever. Note that
 `Hold` is one of those states and `Idle` is not required: a held machine has
 stopped, it simply still has a job in its buffer.
+
+**Why `reset` is the default, and why a feed hold alone is not enough.**
+Whether `!` switches the beam off depends on GRBL setting `$32`. With laser
+mode on it does. With laser mode off the output is a spindle — and a feed hold
+deliberately leaves a spindle running, because a router bit stopping in the cut
+is its own kind of damage. `M3` constant power plus `$32=0` means the axes stop
+and the beam keeps burning where it stands. A soft reset has no such
+dependency: it switches the output off unconditionally. And the job it ends
+was over anyway, because LightBurn streams — when the connection dies there is
+nothing left to resume into.
+
+Choosing `hold` gets the reversible version, with the check that makes it
+honest. GRBL fills the accessory field of its status report from the actual
+output, so `A:S` is the controller saying the beam is on, and an `Ov:` field
+without an accessory beside it is the controller saying nothing is on. If the
+beam is still on after the hold, the bridge sends the spindle-stop override
+(`0x9E`, which leaves the job resumable) and then a soft reset if that was not
+enough. If the controller never says, and `$32=0` is known, it resets — that
+is not an open question. Otherwise it records that it could not confirm.
+
+### The laser may not be on while nothing moves
+
+The disconnect handler reacts to a symptom. The hazard is the laser being on
+with the machine standing still, and that has causes a disconnect cannot see —
+LightBurn hanging with its connection intact, for one. So it is watched
+directly:
+
+| Condition | Grace |
+| --- | --- |
+| Laser on, nobody connected | 1 second |
+| Laser on, machine has not moved | `grbl.stationary_beam_seconds`, 20 by default, 0 to switch off |
+
+The second one has to be generous: piercing thick material is a stationary burn
+on purpose. Set it above your longest pierce. Both end in the same ladder, and
+both stay out of it entirely when `on_disconnect` is `none`.
+
+The check needs a status report that is not stale, so the appliance asks for
+one when nobody else has for a second. During a job LightBurn polls several
+times a second and the appliance stays quiet; when the conversation stops, it
+takes over the asking.
 
 An idle machine is left alone; a hold would only leave the next client
 something to clear. A service restart does not count as a client walking away,

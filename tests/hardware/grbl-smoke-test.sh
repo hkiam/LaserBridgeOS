@@ -55,6 +55,34 @@ else
 	echo "  a second client was refused"
 fi
 
+say "Laser mode"
+# The setting that decides whether a feed hold switches the beam off. Everything
+# the appliance does about an unattended laser is shaped by this answer, and it
+# is the one thing no test away from the machine can establish.
+# shellcheck disable=SC2016  # the $32 is GRBL's setting name, not a variable
+laser=$(printf '$$\n' | nc -w 5 "$HOST" "$PORT" | tr -d '\r' | sed -n 's/^\$32=\(.*\)$/\1/p')
+case "$laser" in
+	1) echo "  \$32=1, laser mode on: a feed hold is expected to switch the beam off" ;;
+	0) echo "  \$32=0, LASER MODE OFF: this controller treats the laser as a spindle." >&2
+	   echo "  A feed hold will NOT switch the beam off. Keep on_disconnect on 'reset'." >&2 ;;
+	*) echo "  could not read \$32 (answer: '${laser:-none}')" ;;
+esac
+
+say "What the bridge has recorded"
+ssh "laserbridge@$HOST" laserbridge grbl-journal 2>/dev/null | head -40 ||
+	echo "  (no journal - ser2net, or the daemon is not running)"
+
 say "Done"
-echo "Byte transparency and disconnect handling are covered by the automated"
-echo "tests; what this checked is that real hardware answers through the bridge."
+echo "Byte transparency, disconnect handling and the escalation are covered by"
+echo "the automated tests against a simulated controller - which only proves the"
+echo "bridge reacts correctly to each answer, not that your controller gives the"
+echo "answer we assume. Two things are worth checking by hand, with scrap"
+echo "material and the lid open:"
+echo
+echo "  1. Start a cut, then pull the network cable. The beam must go out."
+echo "     Then: ssh laserbridge@$HOST laserbridge grbl-journal"
+echo "     and read what the bridge did and why."
+echo
+echo "  2. With laserbridged running, restart it during a job:"
+echo "     ssh laserbridge@$HOST doas rc-service laserbridged restart"
+echo "     The controller must NOT reset - no Grbl banner, no lost position."

@@ -46,6 +46,11 @@ const (
 	feedHold  = byte('!')
 	statusReq = byte('?')
 	softReset = byte(0x18)
+	// spindleStop is GRBL 1.1's spindle-stop override. It acts only in the
+	// HOLD state and it TOGGLES: sending it to a controller whose output is
+	// already stopped switches the laser back on. It is only ever sent here on
+	// positive evidence that the beam is on.
+	spindleStop = byte(0x9E)
 )
 
 // State is what the bridge is currently doing. The web interface and the API
@@ -87,6 +92,17 @@ type Config struct {
 	JournalPath string
 	// MonitorPort serves a read-only copy of the traffic. Zero switches it off.
 	MonitorPort int
+	// BeamGrace is how long the laser may be on with nobody attached before
+	// the bridge switches it off itself.
+	BeamGrace time.Duration
+	// StationaryBeam is how long the laser may be on without the machine
+	// moving. Zero switches the check off. This one has to be generous:
+	// piercing thick material is a stationary burn on purpose.
+	StationaryBeam time.Duration
+	// IdlePoll is how long the appliance waits to hear from the controller
+	// before asking itself. GRBL only speaks when spoken to, and a watchdog
+	// reading a status report that stopped updating is worse than none.
+	IdlePoll time.Duration
 }
 
 // Status is the snapshot handed out over the status socket.
@@ -147,6 +163,16 @@ type Bridge struct {
 	sent     *lineTail
 	monitors *monitors
 
+	// interveneMu makes sure only one thing is commanding the machine at a
+	// time. The disconnect handler and the beam watchdog can both decide to
+	// act, and two escalations interleaving would send a spindle-stop toggle
+	// into the middle of another one's accounting - which would switch the
+	// laser back on.
+	interveneMu sync.Mutex
+	// portOpenedAt is when the current serial port was opened, which is what
+	// makes "has never said anything" a fault rather than an absence.
+	portOpenedAt time.Time
+
 	rx       atomic.Uint64
 	tx       atomic.Uint64
 	rejected atomic.Uint64
@@ -161,13 +187,22 @@ func New(config Config, logger *log.Logger) *Bridge {
 		config.HoldSettle = 3 * time.Second
 	}
 	if config.OnDisconnect == "" {
-		config.OnDisconnect = DisconnectHold
+		config.OnDisconnect = DisconnectReset
 	}
 	if config.SilenceAfter <= 0 {
 		config.SilenceAfter = 10 * time.Second
 	}
 	if config.ClientWriteTimeout <= 0 {
 		config.ClientWriteTimeout = 5 * time.Second
+	}
+	if config.BeamGrace <= 0 {
+		config.BeamGrace = time.Second
+	}
+	if config.IdlePoll <= 0 {
+		config.IdlePoll = time.Second
+	}
+	if config.StationaryBeam < 0 {
+		config.StationaryBeam = 0
 	}
 	bridge := &Bridge{
 		config:   config,
@@ -190,6 +225,21 @@ func (b *Bridge) recordReport(report grbl.Report, machine grbl.Machine) {
 		event.Position = &position
 	}
 	switch report.Kind {
+	case "setting":
+		// A $$ dump is thirty-odd lines and none of them are news, except the
+		// one that decides whether a feed hold switches the beam off.
+		if report.Setting == grbl.LaserMode {
+			b.logf("laser mode ($32) is %s", report.SettingValue)
+			if machine.LaserMode == grbl.SettingOff {
+				b.journal.Add(Event{
+					Kind: "fault",
+					Text: "laser mode ($32) is off: this controller treats the laser as a spindle, " +
+						"and a feed hold does not switch a spindle off",
+					State: machine.State,
+				})
+			}
+		}
+		return
 	case "ok":
 		// Not worth recording, but it answers for a line, and the count is
 		// what makes the next error attributable.
@@ -240,10 +290,21 @@ func (b *Bridge) Status() Status {
 		ClientsRejected:  b.rejected.Load(),
 		Machine:          b.observer.Machine(),
 		LastIntervention: b.lastIntervention,
-		ControllerSilent: b.observer.Silent(b.config.SilenceAfter) && b.clientAddr != "",
+		ControllerSilent: b.devicePath != "" && b.silentLocked(),
 		Gibberish:        b.devicePath != "" && b.observer.Gibberish(),
 		Monitors:         b.monitors.count(),
 	}
+}
+
+// silentLocked is controllerSilent for a caller that already holds b.mu.
+func (b *Bridge) silentLocked() bool {
+	if b.portOpenedAt.IsZero() {
+		return false
+	}
+	if b.observer.Machine().LastReportUnix == 0 {
+		return time.Since(b.portOpenedAt) > b.config.SilenceAfter
+	}
+	return b.observer.Silent(b.config.SilenceAfter)
 }
 
 func (b *Bridge) setState(state State) {
@@ -324,34 +385,145 @@ func (b *Bridge) Run(done <-chan struct{}, ready chan<- struct{}) error {
 	}
 }
 
-// watch notices a controller that has stopped answering and says so. It does
-// not act on it.
+// watch is the standing supervision, as opposed to the disconnect handler's
+// reaction to one particular event.
 //
-// GRBL speaks when spoken to: a quiet link usually means the client has
-// nothing to ask, not that anything is wrong. Only the client knows whether it
-// is mid-job, so a bridge that held the machine on silence would interrupt
-// perfectly good work on a guess. What it can do is report the observation and
-// let the operator - who can see the machine - decide.
+// The disconnect handler acts on a symptom: the client went away. The hazard
+// it stands in for is different and larger - the laser is on and the machine
+// is not moving - and that hazard has causes the disconnect handler cannot
+// see. LightBurn can hang with its connection intact and its job half sent.
+// Our own escalation can fail. A controller can sit in Hold with the output
+// still live. So the invariant is watched directly, rather than one of the
+// ways it can be broken.
+//
+// Two conditions, because they carry different risks of being wrong:
+//
+//   - The laser is on with nobody attached. There is no legitimate version of
+//     this, so the grace is short.
+//   - The laser is on and the machine has not moved. Piercing thick material
+//     is a stationary burn on purpose, and so is aiming the beam by hand, so
+//     the grace here has to be longer than any of those - and it is the one
+//     number worth putting in the configuration.
+//
+// It asks the controller for a status report only when nobody else has for a
+// while. During a job the client polls several times a second and the
+// appliance stays silent; when the conversation stops, it takes over the
+// asking. That is the one thing it injects into a client's stream, it is
+// read-only, and without it the watchdog would be reading a number that
+// stopped updating exactly when it started mattering.
 func (b *Bridge) watch(done <-chan struct{}) {
-	ticker := time.NewTicker(time.Second)
+	tick := b.config.IdlePoll / 2
+	if tick < 100*time.Millisecond {
+		tick = 100 * time.Millisecond
+	}
+	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
-	reported := false
+
+	silenceReported := false
+	var beamOnSince, movedAt time.Time
+	var lastPosition grbl.Position
+
 	for {
 		select {
 		case <-done:
 			return
 		case <-ticker.C:
 		}
-		silent := b.observer.Silent(b.config.SilenceAfter) && b.currentClient() != nil
-		if silent && !reported {
-			b.logf("the controller has not answered for over %s while a client is connected", b.config.SilenceAfter)
-			b.note("fault", "the controller stopped answering while a client was connected")
-			reported = true
+		port := b.currentPort()
+		if port == nil {
+			beamOnSince, movedAt = time.Time{}, time.Time{}
+			continue
 		}
-		if !silent {
-			reported = false
+		// Only when nobody else is asking.
+		if b.observer.Quiet(b.config.IdlePoll) {
+			if err := b.writeOwn(port, statusReq); err != nil {
+				continue
+			}
+		}
+
+		if silent := b.controllerSilent(); silent != silenceReported {
+			silenceReported = silent
+			if silent {
+				b.logf("the controller is not answering")
+				b.note("fault", "the controller stopped answering")
+			}
+		}
+
+		machine := b.observer.Machine()
+		now := time.Now()
+		if machine.HasPosition && (machine.Position != lastPosition || movedAt.IsZero()) {
+			lastPosition, movedAt = machine.Position, now
+		}
+		if machine.Beam != grbl.BeamOn {
+			beamOnSince = time.Time{}
+			continue
+		}
+		if beamOnSince.IsZero() {
+			beamOnSince = now
+		}
+		if b.config.OnDisconnect == DisconnectNone {
+			continue
+		}
+
+		why := ""
+		switch {
+		case b.currentClient() == nil && now.Sub(beamOnSince) > b.config.BeamGrace:
+			why = "the laser was on with nobody connected"
+		case b.config.StationaryBeam > 0 && machine.HasPosition &&
+			now.Sub(movedAt) > b.config.StationaryBeam && now.Sub(beamOnSince) > b.config.StationaryBeam:
+			why = "the laser was on and the machine had not moved for " + b.config.StationaryBeam.String()
+		default:
+			continue
+		}
+
+		beamOnSince, movedAt = time.Time{}, time.Time{}
+		b.logf("%s", why)
+		b.note("fault", why)
+		// TryLock rather than Lock: if the disconnect handler is already
+		// working on this, it does not need a second opinion arriving in the
+		// middle of its own accounting - the spindle-stop override is a toggle.
+		if b.interveneMu.TryLock() {
+			b.interveneBeamOn(port, why)
+			b.interveneMu.Unlock()
 		}
 	}
+}
+
+// interveneBeamOn stops a laser that should not be on.
+//
+// The feed hold comes first because the spindle-stop override only acts in the
+// HOLD state, and because whatever the machine thinks it is doing, it should
+// stop doing it.
+func (b *Bridge) interveneBeamOn(port *serial.Port, why string) {
+	if b.aborted() {
+		return
+	}
+	if err := b.writeOwn(port, feedHold); err != nil {
+		b.setError(err)
+		return
+	}
+	b.noteIntervention("feed hold: " + why)
+	b.ensureBeamOff(port, false)
+}
+
+// controllerSilent reports whether the controller has stopped answering, or
+// never started.
+//
+// Never having spoken counts, once the port has been open long enough for an
+// answer: with the appliance now polling whenever nobody else is, a controller
+// that has said nothing at all is a wrong device, a wrong baud rate, or a dead
+// board - not simply one nobody has addressed.
+func (b *Bridge) controllerSilent() bool {
+	b.mu.Lock()
+	openedAt := b.portOpenedAt
+	b.mu.Unlock()
+	if openedAt.IsZero() {
+		return false
+	}
+	if b.observer.Machine().LastReportUnix == 0 {
+		return time.Since(openedAt) > b.config.SilenceAfter
+	}
+	return b.observer.Silent(b.config.SilenceAfter)
 }
 
 // serveDevice keeps the serial port open and forwards whatever the controller
@@ -417,14 +589,40 @@ func (b *Bridge) openPort(done <-chan struct{}) *serial.Port {
 			// Whatever the reading described, it described a controller that is
 			// no longer on the other end of this file descriptor.
 			b.observer.Reset()
+
 			b.portMu.Lock()
+			// Publishing the port and being told to stop are the same race,
+			// and losing it hangs the daemon: the shutdown path closes the
+			// port to unblock the reader below, and a port that was not yet
+			// published when it ran never gets closed at all. Both sides take
+			// this lock, so checking here closes the window - either the
+			// shutdown finds the port, or this finds the shutdown.
+			select {
+			case <-done:
+				b.portMu.Unlock()
+				_ = port.Close()
+				return nil
+			default:
+			}
 			b.port = port
 			b.portMu.Unlock()
 			b.mu.Lock()
 			b.devicePath = port.Path()
+			b.portOpenedAt = time.Now()
 			b.mu.Unlock()
 			b.logf("serial port %s open at %d baud", port.Path(), b.config.Baudrate)
 			b.note("device", "opened "+port.Path()+" at "+strconv.Itoa(b.config.Baudrate)+" baud")
+			// Delayed, because an adapter that was just plugged in may be
+			// attached to a controller that is still booting, and a question
+			// asked into a reset gets no answer.
+			go func() {
+				select {
+				case <-done:
+					return
+				case <-time.After(2 * time.Second):
+				}
+				b.askSettings(port)
+			}()
 			if b.currentClient() == nil {
 				b.setState(StateListening)
 			}
@@ -608,13 +806,18 @@ func (b *Bridge) readFromClient(conn net.Conn) {
 // onClientGone decides what a machine left to itself should do.
 //
 // A laptop that closes its lid mid-job leaves a controller working through
-// whatever is still in its planner buffer, with nobody watching. Sending a
-// feed hold pauses motion and switches the beam off while keeping the
-// position, so the job can be resumed once the client is back. That is a
-// convenience for an unattended machine and nothing more: it depends on this
-// daemon running, the serial link working and the controller answering, so it
-// is not a substitute for a hardware emergency stop and must never be
-// presented as one.
+// whatever is still in its planner buffer, with nobody watching, and on a
+// laser that is worse than it sounds: if the stream simply starves, the axes
+// stop but the beam is not necessarily switched off with them.
+//
+// A feed hold stops the motion. Whether it also switches the beam off depends
+// on GRBL setting $32: with laser mode on it does, and with laser mode off the
+// output is treated as a spindle - which a feed hold deliberately leaves
+// running, because a router bit stopping in the cut is its own kind of damage.
+// So the hold is where this starts, never where it ends.
+//
+// None of it is a substitute for a hardware emergency stop. It depends on this
+// daemon running, the serial link working and the controller answering.
 func (b *Bridge) onClientGone() {
 	// Counted whatever the outcome, including "nothing to do": it is what lets
 	// a test wait for the decision to have been made rather than sleep and
@@ -638,10 +841,21 @@ func (b *Bridge) onClientGone() {
 		// client has to clear before it can do anything.
 		return
 	}
+	if machine.State.AtRest() && machine.Beam == grbl.BeamOff {
+		// Standing still with the output off. That is a machine on hold - very
+		// likely one the watchdog has already dealt with - and holding it
+		// again would achieve nothing except an entry in the record implying
+		// something was wrong.
+		return
+	}
 	port := b.currentPort()
 	if port == nil {
 		return
 	}
+	// One thing commanding the machine at a time; the watchdog may have
+	// reached the same conclusion a moment earlier.
+	b.interveneMu.Lock()
+	defer b.interveneMu.Unlock()
 
 	b.logf("client left while machine was %s; sending feed hold", machine.State)
 	if err := b.writeOwn(port, feedHold); err != nil {
@@ -649,6 +863,14 @@ func (b *Bridge) onClientGone() {
 		return
 	}
 	b.noteIntervention("feed hold after the client disconnected while " + string(machine.State))
+
+	// The beam is dealt with before the position. A soft reset while the axes
+	// are still turning costs a homing cycle; a beam left burning where it
+	// stands costs the workpiece and possibly more, so if the controller says
+	// the laser is still on, none of the politeness below applies.
+	if b.ensureBeamOff(port, action == DisconnectReset) {
+		return
+	}
 	if action != DisconnectReset {
 		return
 	}
@@ -660,6 +882,97 @@ func (b *Bridge) onClientGone() {
 	if !b.waitUntilStill(port) {
 		b.logf("machine did not come to rest within %s; sending soft reset anyway", b.config.HoldSettle)
 	}
+	b.softReset(port, "soft reset after the client disconnected mid-job")
+}
+
+// ensureBeamOff checks that the hold actually switched the laser off, and does
+// something about it if it did not.
+//
+// The check is not an inference from the state. GRBL fills the accessory field
+// of its status report from the actual output, so "A:S" is the controller
+// saying the beam is on, and an Ov: field arriving without an accessory beside
+// it is the controller saying nothing is on at all.
+//
+// The escalation is ordered by what it costs. The spindle-stop override stops
+// the output and leaves the job resumable; a soft reset guarantees the output
+// is off - mc_reset kills the spindle unconditionally - and ends the job.
+// It returns true if it soft-reset the controller, so a caller that was about
+// to do that itself does not do it twice. resetting says the caller intends a
+// reset anyway, which turns "could not confirm" from something worth saying
+// into noise.
+func (b *Bridge) ensureBeamOff(port *serial.Port, resetting bool) bool {
+	switch b.pollBeam(port) {
+	case grbl.BeamOff:
+		b.logf("controller confirms the beam is off")
+		return false
+
+	case grbl.BeamOn:
+		// Only ever sent on positive evidence that the beam is on. The
+		// override is a TOGGLE: sending it to a controller whose output is
+		// already stopped would switch the laser back on.
+		b.logf("the beam is still on after the feed hold; stopping the spindle output")
+		if err := b.writeOwn(port, spindleStop); err != nil {
+			b.setError(err)
+			return false
+		}
+		b.noteIntervention("the beam was still on; stopped the spindle output")
+		if b.pollBeam(port) == grbl.BeamOff {
+			b.logf("controller confirms the beam is off")
+			return false
+		}
+		b.softReset(port, "the beam stayed on after a feed hold and a spindle stop; soft reset")
+		return true
+
+	default:
+		// The controller never said. If laser mode is off, that is not an open
+		// question - the output is a spindle and a feed hold does not touch a
+		// spindle.
+		if b.observer.Machine().LaserMode == grbl.SettingOff {
+			b.softReset(port, "laser mode ($32) is off, so the feed hold did not switch the beam off; soft reset")
+			return true
+		}
+		// Otherwise: on the balance of what is known, laser mode switches the
+		// beam off with the hold. Recorded rather than acted on, because
+		// ending a job on an absence of evidence is its own kind of unreliable
+		// - and grbl.on_disconnect=reset is there for anyone who would rather.
+		if !resetting {
+			b.noteIntervention("feed hold sent, but the controller never reported whether the beam is off")
+			b.logf("could not confirm the beam is off")
+		}
+		return false
+	}
+}
+
+// pollBeam asks the controller about itself until it says something about its
+// outputs, or until asking stops being worthwhile.
+func (b *Bridge) pollBeam(port *serial.Port) grbl.Beam {
+	// Deliberately starting from no answer rather than from whatever was last
+	// seen: the question is what the controller says now.
+	b.observer.ForgetBeam()
+
+	deadline := time.NewTimer(b.config.HoldSettle)
+	defer deadline.Stop()
+	ticker := time.NewTicker(150 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if err := b.writeOwn(port, statusReq); err != nil {
+			return grbl.BeamUnknown
+		}
+		select {
+		case <-ticker.C:
+			if beam := b.observer.Machine().Beam; beam != grbl.BeamUnknown {
+				return beam
+			}
+			if b.currentClient() != nil || b.aborted() {
+				return grbl.BeamUnknown
+			}
+		case <-deadline.C:
+			return b.observer.Machine().Beam
+		}
+	}
+}
+
+func (b *Bridge) softReset(port *serial.Port, why string) {
 	if b.aborted() {
 		return
 	}
@@ -667,8 +980,8 @@ func (b *Bridge) onClientGone() {
 		b.setError(err)
 		return
 	}
-	b.noteIntervention("soft reset after the client disconnected mid-job")
-	b.logf("soft reset sent")
+	b.noteIntervention(why)
+	b.logf("soft reset sent: %s", why)
 }
 
 // waitUntilStill polls until the controller reports its axes have stopped.
@@ -700,8 +1013,23 @@ func (b *Bridge) waitUntilStill(port *serial.Port) bool {
 	}
 }
 
-// writeOwn sends a byte the bridge decided to send, as opposed to one a client
-// asked for. Anyone watching the monitor port sees it marked as ours: a
+// askSettings requests a settings dump, which is how the appliance learns
+// whether laser mode is on before it matters rather than afterwards.
+//
+// Read-only, like the status request, and sent only with nobody attached so a
+// client never sees an answer to a question it did not ask.
+func (b *Bridge) askSettings(port *serial.Port) {
+	if b.currentClient() != nil || b.aborted() {
+		return
+	}
+	if _, err := port.Write([]byte("$$\n")); err != nil {
+		return
+	}
+	b.monitors.send('*', []byte("$$\n"))
+}
+
+// writeOwn sends a command the bridge decided to send, as opposed to one a
+// client asked for. Anyone watching the monitor port sees it marked as ours: a
 // transcript that showed the appliance's own feed hold as if the client had
 // sent it would mislead about the one thing worth watching for.
 func (b *Bridge) writeOwn(port *serial.Port, command byte) error {
