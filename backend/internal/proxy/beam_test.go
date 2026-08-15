@@ -425,6 +425,12 @@ func TestWatchdogStopsAStationaryBeamWithTheClientStillConnected(t *testing.T) {
 	// spindle-stop override - GRBL ignores the first from Idle and the second
 	// outside a hold - so the only rung that helps here is the last one.
 	waitForIntervention(t, bridge, "soft reset")
+	// Waiting for the reset to have been counted before reading what it
+	// achieved. The intervention is recorded when the bridge decides on it,
+	// which is earlier than the byte arriving - reading the simulator on the
+	// strength of the record alone is the same race that made these tests flake
+	// once already.
+	waitForCounts(t, sim, 0, 0, 1)
 	sim.mu.Lock()
 	beam := sim.beam
 	sim.mu.Unlock()
