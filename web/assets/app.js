@@ -162,6 +162,7 @@ async function loadMachine() {
   // and thrown away, and $32 is the difference between the appliance knowing
   // that a hold is enough and only hoping so.
   setText('#machine-firmware', firmwareText(machine));
+  setText('#machine-job', jobText(bridge.job || {}));
 
   // Anything the bridge did on its own accord is worth saying plainly: an
   // operator who finds a paused machine should not have to guess why.
@@ -262,6 +263,20 @@ function beamText(machine) {
     return `not conclusive — last said off ${age === null ? 'earlier' : `${age} s ago`}, cutting at S${machine.spindle}`;
   }
   return age ? `${said} (as of ${age} s ago)` : said;
+}
+
+// The work in front of the machine, as opposed to what it is doing this
+// instant. A pierce, a pause and a material change all look like "not moving",
+// which is why the appliance keeps a job open across them - and why the guards
+// that refuse to interrupt one finally mean what they say.
+function jobText(job) {
+  if (job.running) {
+    const parts = [`running ${duration(job.seconds || 0)}`];
+    if (job.lines) parts.push(`${job.lines} lines`);
+    return parts.join(' · ');
+  }
+  if (!job.ended) return 'none yet';
+  return `last: ${job.ended} after ${duration(job.seconds || 0)}${job.lines ? ` · ${job.lines} lines` : ''}`;
 }
 
 function firmwareText(machine) {

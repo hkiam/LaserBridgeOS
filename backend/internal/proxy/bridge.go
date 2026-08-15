@@ -143,6 +143,9 @@ type Status struct {
 	Gibberish bool `json:"gibberish"`
 	// Monitors is how many read-only watchers are attached.
 	Monitors int `json:"monitors"`
+	// Job is the work in front of the machine: the one running, or the last
+	// one and why it ended.
+	Job Job `json:"job"`
 }
 
 // Bridge is the running proxy.
@@ -199,6 +202,13 @@ type Bridge struct {
 	// probeController for why that gate has to exist.
 	probed    chan struct{}
 	probeOnce sync.Once
+
+	// jobs is the appliance's notion of the work in front of the machine, as
+	// opposed to what the machine is doing this instant.
+	jobs jobTracker
+	// lines counts newline-terminated lines the client has sent. A sender
+	// counts the same thing, which is what makes it the useful unit.
+	lines atomic.Uint64
 
 	rx       atomic.Uint64
 	tx       atomic.Uint64
@@ -330,6 +340,7 @@ func (b *Bridge) Status() Status {
 		ControllerSilent: b.devicePath != "" && silent,
 		Gibberish:        b.devicePath != "" && b.observer.Gibberish(),
 		Monitors:         b.monitors.count(),
+		Job:              b.jobs.current(),
 	}
 }
 
@@ -668,6 +679,11 @@ func (b *Bridge) serveClient(conn net.Conn) {
 		}
 		b.logf("client %s disconnected", conn.RemoteAddr())
 		b.note("client", "disconnected: "+conn.RemoteAddr().String())
+		// A job whose sender has gone is over whatever the machine does with
+		// what is left in its buffer.
+		if note := b.jobs.end("ended with the client", time.Now()); note != "" {
+			b.note("job", note)
+		}
 		// After the bookkeeping, not before: an intervention can take a few
 		// seconds, and the status should already read LISTENING rather than
 		// claim a client that has gone.
@@ -702,6 +718,11 @@ func (b *Bridge) readFromClient(conn net.Conn) {
 			//
 			// This is a correctness argument, not a diagnosed failure - the
 			// window was never observed to be hit.
+			for _, c := range buffer[:n] {
+				if c == '\n' {
+					b.lines.Add(1)
+				}
+			}
 			b.sent.Write(buffer[:n])
 			b.monitors.send('>', buffer[:n])
 			if _, writeErr := port.Write(buffer[:n]); writeErr != nil {
