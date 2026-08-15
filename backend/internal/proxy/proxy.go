@@ -82,6 +82,11 @@ type Config struct {
 	// ClientWriteTimeout bounds how long a single write towards the client may
 	// take before the client is treated as dead.
 	ClientWriteTimeout time.Duration
+	// JournalPath is where notable events are kept across a reboot. Empty
+	// keeps them in memory only.
+	JournalPath string
+	// MonitorPort serves a read-only copy of the traffic. Zero switches it off.
+	MonitorPort int
 }
 
 // Status is the snapshot handed out over the status socket.
@@ -104,6 +109,11 @@ type Status struct {
 	// ControllerSilent is set when the controller answered once and then
 	// stopped while a client was attached. It is a reading, not a verdict.
 	ControllerSilent bool `json:"controller_silent"`
+	// Gibberish is set when the port is open and answering with something that
+	// is not GRBL - almost always the wrong baud rate.
+	Gibberish bool `json:"gibberish"`
+	// Monitors is how many read-only watchers are attached.
+	Monitors int `json:"monitors"`
 }
 
 // Bridge is the running proxy.
@@ -131,6 +141,11 @@ type Bridge struct {
 	// observer reads along with the controller's output. It is fed a copy of
 	// what is forwarded and can therefore never change it.
 	observer *grbl.Observer
+	// journal remembers what went wrong; sent remembers the last few lines the
+	// client sent, so an error can be shown next to the line that caused it.
+	journal  *Journal
+	sent     *lineTail
+	monitors *monitors
 
 	rx       atomic.Uint64
 	tx       atomic.Uint64
@@ -154,7 +169,60 @@ func New(config Config, logger *log.Logger) *Bridge {
 	if config.ClientWriteTimeout <= 0 {
 		config.ClientWriteTimeout = 5 * time.Second
 	}
-	return &Bridge{config: config, logger: logger, state: StateStopped, observer: grbl.NewObserver()}
+	bridge := &Bridge{
+		config:   config,
+		logger:   logger,
+		state:    StateStopped,
+		observer: grbl.NewObserver(),
+		journal:  NewJournal(config.JournalPath),
+		sent:     newLineTail(),
+		monitors: newMonitors(config.ClientWriteTimeout),
+	}
+	bridge.observer.OnReport = bridge.recordReport
+	return bridge
+}
+
+// recordReport turns a notable line from the controller into a journal entry.
+func (b *Bridge) recordReport(report grbl.Report, machine grbl.Machine) {
+	event := Event{Kind: report.Kind, Text: report.Text, Code: report.Code, State: machine.State}
+	if machine.HasPosition {
+		position := machine.Position
+		event.Position = &position
+	}
+	switch report.Kind {
+	case "ok":
+		// Not worth recording, but it answers for a line, and the count is
+		// what makes the next error attributable.
+		b.sent.Acknowledge()
+		return
+	case "error":
+		// GRBL replies in order, one per line accepted, so the line this
+		// answered is the oldest one still outstanding.
+		event.Line = b.sent.Acknowledge()
+		event.Context = b.sent.Lines()
+	case "alarm":
+		// An alarm is not a reply to a line and answers for nothing, so the
+		// queue is left alone; the recent lines are still worth having.
+		event.Context = b.sent.Lines()
+	case "welcome":
+		event.Kind = "reset"
+		event.Text = "the controller restarted: " + report.Text
+		// A reset empties the controller's buffer, so every line still
+		// outstanding was answered for by nobody.
+		b.sent.Forget()
+	}
+	b.journal.Add(event)
+	if report.Kind == "alarm" || report.Kind == "error" {
+		b.logf("controller said %s", report.Text)
+	}
+}
+
+// Journal is the record of what has gone wrong.
+func (b *Bridge) Journal() *Journal { return b.journal }
+
+func (b *Bridge) note(kind, text string) {
+	machine := b.observer.Machine()
+	b.journal.Add(Event{Kind: kind, Text: text, State: machine.State})
 }
 
 func (b *Bridge) Status() Status {
@@ -173,6 +241,8 @@ func (b *Bridge) Status() Status {
 		Machine:          b.observer.Machine(),
 		LastIntervention: b.lastIntervention,
 		ControllerSilent: b.observer.Silent(b.config.SilenceAfter) && b.clientAddr != "",
+		Gibberish:        b.devicePath != "" && b.observer.Gibberish(),
+		Monitors:         b.monitors.count(),
 	}
 }
 
@@ -213,6 +283,7 @@ func (b *Bridge) Run(done <-chan struct{}, ready chan<- struct{}) error {
 	deviceFinished := make(chan struct{})
 	go b.serveDevice(done, deviceFinished)
 	go b.watch(done)
+	go b.serveMonitor(done)
 
 	b.setState(StateListening)
 	b.logf("listening on %s", listener.Addr())
@@ -274,6 +345,7 @@ func (b *Bridge) watch(done <-chan struct{}) {
 		silent := b.observer.Silent(b.config.SilenceAfter) && b.currentClient() != nil
 		if silent && !reported {
 			b.logf("the controller has not answered for over %s while a client is connected", b.config.SilenceAfter)
+			b.note("fault", "the controller stopped answering while a client was connected")
 			reported = true
 		}
 		if !silent {
@@ -311,6 +383,7 @@ func (b *Bridge) serveDevice(done <-chan struct{}, finished chan<- struct{}) {
 				// reason for G-code acknowledgements to arrive later.
 				b.writeToClient(buffer[:n])
 				b.observer.Write(buffer[:n])
+				b.monitors.send('<', buffer[:n])
 			}
 			if err != nil {
 				if !isExpectedClose(err) {
@@ -330,6 +403,7 @@ func (b *Bridge) serveDevice(done <-chan struct{}, finished chan<- struct{}) {
 		// left connected to nothing would keep sending G-code into a void and
 		// believe it was cutting.
 		b.logf("serial port lost")
+		b.note("device", "the serial port disappeared; the client was dropped with it")
 		b.DisconnectClient()
 	}
 }
@@ -350,6 +424,7 @@ func (b *Bridge) openPort(done <-chan struct{}) *serial.Port {
 			b.devicePath = port.Path()
 			b.mu.Unlock()
 			b.logf("serial port %s open at %d baud", port.Path(), b.config.Baudrate)
+			b.note("device", "opened "+port.Path()+" at "+strconv.Itoa(b.config.Baudrate)+" baud")
 			if b.currentClient() == nil {
 				b.setState(StateListening)
 			}
@@ -429,11 +504,13 @@ func (b *Bridge) serveClient(conn net.Conn) {
 		if !b.config.KickOldClient {
 			b.rejected.Add(1)
 			b.logf("refusing %s: %s still connected", conn.RemoteAddr(), previous.RemoteAddr())
+			b.note("client", "refused "+conn.RemoteAddr().String()+"; "+previous.RemoteAddr().String()+" still connected")
 			b.clientMu.Unlock()
 			_ = conn.Close()
 			return
 		}
 		b.logf("closing %s to make room for %s", previous.RemoteAddr(), conn.RemoteAddr())
+		b.note("client", "closed "+previous.RemoteAddr().String()+" to make room for "+conn.RemoteAddr().String())
 		_ = previous.Close()
 	}
 	b.client = conn
@@ -445,6 +522,10 @@ func (b *Bridge) serveClient(conn net.Conn) {
 	b.mu.Unlock()
 	b.setState(StateClientConnected)
 	b.logf("client %s connected", conn.RemoteAddr())
+	b.note("client", "connected: "+conn.RemoteAddr().String())
+	// Whatever the last client left in the controller's buffer is not this
+	// one's, and counting replies against its lines would misattribute them.
+	b.sent.Forget()
 
 	b.readFromClient(conn)
 
@@ -471,6 +552,7 @@ func (b *Bridge) serveClient(conn net.Conn) {
 			b.setState(StateWaitingForDevice)
 		}
 		b.logf("client %s disconnected", conn.RemoteAddr())
+		b.note("client", "disconnected: "+conn.RemoteAddr().String())
 		// After the bookkeeping, not before: an intervention can take a few
 		// seconds, and the status should already read LISTENING rather than
 		// claim a client that has gone.
@@ -494,6 +576,19 @@ func (b *Bridge) readFromClient(conn net.Conn) {
 				b.setError(errors.New("client sent data while no serial port is open"))
 				return
 			}
+			// Recorded before it is sent, not after. The controller's replies
+			// are read on another goroutine, and nothing orders that goroutine
+			// against this one: a controller that answers quickly enough can
+			// have its reply processed before this line was written down, and
+			// a reply for a line nobody sent throws the attribution off for
+			// the rest of the connection. Recording first removes the
+			// possibility. The cost is a byte loop ahead of a write that a
+			// 115200-baud wire takes a thousand times longer to carry.
+			//
+			// This is a correctness argument, not a diagnosed failure - the
+			// window was never observed to be hit.
+			b.sent.Write(buffer[:n])
+			b.monitors.send('>', buffer[:n])
 			if _, writeErr := port.Write(buffer[:n]); writeErr != nil {
 				if !isExpectedClose(writeErr) {
 					b.setError(writeErr)
@@ -549,7 +644,7 @@ func (b *Bridge) onClientGone() {
 	}
 
 	b.logf("client left while machine was %s; sending feed hold", machine.State)
-	if _, err := port.Write([]byte{feedHold}); err != nil {
+	if err := b.writeOwn(port, feedHold); err != nil {
 		b.setError(err)
 		return
 	}
@@ -568,7 +663,7 @@ func (b *Bridge) onClientGone() {
 	if b.aborted() {
 		return
 	}
-	if _, err := port.Write([]byte{softReset}); err != nil {
+	if err := b.writeOwn(port, softReset); err != nil {
 		b.setError(err)
 		return
 	}
@@ -587,7 +682,7 @@ func (b *Bridge) waitUntilStill(port *serial.Port) bool {
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if _, err := port.Write([]byte{statusReq}); err != nil {
+		if err := b.writeOwn(port, statusReq); err != nil {
 			return false
 		}
 		select {
@@ -603,6 +698,18 @@ func (b *Bridge) waitUntilStill(port *serial.Port) bool {
 			return false
 		}
 	}
+}
+
+// writeOwn sends a byte the bridge decided to send, as opposed to one a client
+// asked for. Anyone watching the monitor port sees it marked as ours: a
+// transcript that showed the appliance's own feed hold as if the client had
+// sent it would mislead about the one thing worth watching for.
+func (b *Bridge) writeOwn(port *serial.Port, command byte) error {
+	if _, err := port.Write([]byte{command}); err != nil {
+		return err
+	}
+	b.monitors.send('*', []byte{command})
+	return nil
 }
 
 // aborted reports whether the daemon is shutting down, so an intervention in
@@ -626,6 +733,13 @@ func (b *Bridge) noteIntervention(what string) {
 	b.mu.Lock()
 	b.lastIntervention = what
 	b.mu.Unlock()
+	machine := b.observer.Machine()
+	event := Event{Kind: "intervention", Text: what, State: machine.State, Context: b.sent.Lines()}
+	if machine.HasPosition {
+		position := machine.Position
+		event.Position = &position
+	}
+	b.journal.Add(event)
 }
 
 // DisconnectClient drops the current client, if any.

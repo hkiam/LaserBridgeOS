@@ -129,11 +129,69 @@ async function loadMachine() {
   // Anything the bridge did on its own accord is worth saying plainly: an
   // operator who finds a paused machine should not have to guess why.
   const note = $('#machine-note');
-  const text = bridge.controller_silent
-    ? 'The controller has stopped answering while a client is connected.'
-    : bridge.last_intervention || bridge.last_error || '';
+  // Most specific first: a wrong baud rate explains everything else on the
+  // page, so saying anything else while that is true would mislead.
+  const text = bridge.gibberish
+    ? 'The controller is answering with something that is not GRBL — check the baud rate.'
+    : bridge.controller_silent
+      ? 'The controller has stopped answering while a client is connected.'
+      : bridge.last_intervention || bridge.last_error || '';
   note.textContent = text;
   note.hidden = !text;
+}
+
+async function loadJournal() {
+  const card = $('#journal-card');
+  let answer;
+  try {
+    answer = await request('/api/grbl/journal?limit=50');
+  } catch (error) {
+    card.hidden = true;
+    return;
+  }
+  card.hidden = !answer.available;
+  if (!answer.available) return;
+
+  const events = answer.events || [];
+  if (!events.length) {
+    $('#journal').replaceChildren(Object.assign(document.createElement('p'), {
+      className: 'muted', textContent: 'Nothing has gone wrong yet.'}));
+    return;
+  }
+  // Newest first on screen, oldest first in the record.
+  $('#journal').replaceChildren(...events.slice().reverse().map(event => {
+    const row = document.createElement('div');
+    row.className = `journal-row journal-${event.kind}`;
+
+    const when = document.createElement('time');
+    when.textContent = new Date(event.unix * 1000).toLocaleString();
+    const kind = document.createElement('span');
+    kind.className = 'journal-kind';
+    kind.textContent = event.kind;
+    const what = document.createElement('span');
+    what.className = 'journal-text';
+    what.textContent = event.text || '';
+    row.append(when, kind, what);
+
+    if (event.position) {
+      const where = document.createElement('span');
+      where.className = 'journal-where';
+      where.textContent = `X ${event.position.x} Y ${event.position.y}`;
+      row.append(where);
+    }
+    if (event.context && event.context.length) {
+      // The reason the journal exists: GRBL names no line number. Replies come
+      // back in order, so usually the exact line is known — and when it is not,
+      // the surrounding lines are still better than nothing.
+      const context = document.createElement('pre');
+      context.className = 'journal-context';
+      context.textContent = event.context
+        .map(line => (line === event.line ? `→ ${line}` : `  ${line}`))
+        .join('\n');
+      row.append(context);
+    }
+    return row;
+  }));
 }
 
 function machineClass(machineState, bridgeState) {
@@ -153,6 +211,7 @@ async function loadConfig() {
   grbl.kick_old_user.checked = config.grbl.kick_old_user;
   grbl.backend.value = config.grbl.backend;
   grbl.on_disconnect.value = config.grbl.on_disconnect;
+  grbl.monitor_port.value = config.grbl.monitor_port;
   const camera = $('#camera-form').elements;
   camera.device.value = config.camera.device;
   camera.format.value = config.camera.format;
@@ -223,10 +282,13 @@ async function saveConfig(message) {
   await loadStatus();
 }
 
+$('#journal-refresh').addEventListener('click', async () => {
+  try { await loadJournal(); } catch (error) { toast(error.message, true); }
+});
 $('#grbl-form').addEventListener('submit', async event => {
   event.preventDefault();
   const f = event.currentTarget.elements;
-  Object.assign(config.grbl, {device: f.device.value, baudrate: Number(f.baudrate.value), port: Number(f.port.value), max_connections: Number(f.max_connections.value), reconnect: f.reconnect.checked, kick_old_user: f.kick_old_user.checked, backend: f.backend.value, on_disconnect: f.on_disconnect.value});
+  Object.assign(config.grbl, {device: f.device.value, baudrate: Number(f.baudrate.value), port: Number(f.port.value), max_connections: Number(f.max_connections.value), reconnect: f.reconnect.checked, kick_old_user: f.kick_old_user.checked, backend: f.backend.value, on_disconnect: f.on_disconnect.value, monitor_port: Number(f.monitor_port.value)});
   try { await saveConfig('GRBL settings saved'); } catch (error) { toast(error.message, true); }
 });
 $('#camera-form').addEventListener('submit', async event => {
@@ -467,10 +529,14 @@ async function start() {
     await Promise.all([loadConfig(), loadStatus(), loadUpdateStatus()]);
     await loadDevices();
     await loadMachine();
+    await loadJournal();
     setInterval(loadStatus, 5000);
     // The machine reading is asked for more often than the rest: it is the
     // one thing on the page that changes while a job runs.
     setInterval(loadMachine, 2000);
+    // The record changes only when something goes wrong; once a minute is
+    // plenty, and the button is there for impatience.
+    setInterval(loadJournal, 60000);
   } catch (error) { toast(error.message, true); }
 }
 start();

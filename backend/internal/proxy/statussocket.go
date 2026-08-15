@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -18,10 +19,11 @@ import (
 // that nothing but this daemon touches the serial port - the backend asks
 // here instead of opening the device itself.
 //
-// The protocol is one line in, one JSON object out. "status" and an empty
-// line both return the current status; anything else is an error. That is
-// enough for now and leaves room for the commands that Phase 9 will add
-// without changing how callers connect.
+// The protocol is one line in, one JSON object out. "status" and an empty line
+// return the current status, "journal [n]" the recent record of what went
+// wrong; anything else is an error. Unknown commands are refused rather than
+// guessed at, because this socket is world-readable by design and the answer
+// to an unrecognised word should be a short one.
 type StatusSocket struct {
 	path   string
 	bridge *Bridge
@@ -77,9 +79,20 @@ func (s *StatusSocket) answer(conn net.Conn) {
 	line, _ := reader.ReadString('\n')
 	encoder := json.NewEncoder(conn)
 
-	switch strings.TrimSpace(line) {
+	fields := strings.Fields(line)
+	command := ""
+	if len(fields) > 0 {
+		command = fields[0]
+	}
+	switch command {
 	case "", "status":
 		_ = encoder.Encode(s.bridge.Status())
+	case "journal":
+		limit := 0
+		if len(fields) > 1 {
+			limit, _ = strconv.Atoi(fields[1])
+		}
+		_ = encoder.Encode(s.bridge.Journal().Recent(limit))
 	default:
 		_ = encoder.Encode(map[string]string{"error": "unknown command"})
 	}
@@ -101,4 +114,21 @@ func ReadStatus(path string) (Status, error) {
 		return Status{}, err
 	}
 	return status, nil
+}
+
+// ReadJournal asks the daemon what has gone wrong lately.
+func ReadJournal(path string, limit int) ([]Event, error) {
+	conn, err := net.Dial("unix", path)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte("journal " + strconv.Itoa(limit) + "\n")); err != nil {
+		return nil, err
+	}
+	var events []Event
+	if err := json.NewDecoder(conn).Decode(&events); err != nil {
+		return nil, err
+	}
+	return events, nil
 }

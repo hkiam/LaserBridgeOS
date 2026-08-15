@@ -23,10 +23,25 @@ type Observer struct {
 	mu      sync.Mutex
 	line    strings.Builder
 	dropped bool
+	// garbage counts what arrived and made no sense as GRBL. At the wrong
+	// baud rate that is everything, which is the one case worth telling
+	// somebody about.
+	garbage int
+	// recognised counts lines that did parse.
+	recognised int
 
 	machine Machine
 	// now is swappable so tests need not sleep.
 	now func() time.Time
+
+	// OnReport is called for lines worth remembering - alarms, errors,
+	// messages, the welcome banner - and for plain "ok", which is worth
+	// nothing to look at but answers for exactly one line the client sent.
+	// The machine is passed as it stands afterwards.
+	// It is called outside the observer's lock, so it may ask questions back.
+	// Status reports do not go through it: there are several a second during a
+	// job and nothing is learned by recording them.
+	OnReport func(Report, Machine)
 }
 
 // Machine is the current reading of the controller. Every field may be absent:
@@ -62,38 +77,70 @@ func NewObserver() *Observer {
 // machine and the client.
 func (o *Observer) Write(data []byte) {
 	o.mu.Lock()
-	defer o.mu.Unlock()
+	var notable []Report
 	for _, b := range data {
 		switch b {
 		case '\n', '\r':
-			o.flush()
+			if report, ok := o.flush(); ok {
+				notable = append(notable, report)
+			}
 		default:
 			if o.line.Len() >= maxLine {
 				// Keep consuming, but stop remembering: a line this long is not
 				// something GRBL sends, so the stream is either noise or the
 				// wrong baud rate.
 				o.dropped = true
+				o.garbage++
 				continue
 			}
 			o.line.WriteByte(b)
 		}
 	}
+	machine := o.machine
+	o.mu.Unlock()
+
+	// Outside the lock: a listener that wants to know the position as well
+	// would otherwise deadlock asking for it.
+	if o.OnReport != nil {
+		for _, report := range notable {
+			o.OnReport(report, machine)
+		}
+	}
 }
 
-func (o *Observer) flush() {
+// flush parses the line just completed and reports whether it is one a
+// listener should hear about.
+func (o *Observer) flush() (Report, bool) {
 	text := o.line.String()
 	o.line.Reset()
 	dropped := o.dropped
 	o.dropped = false
 	if text == "" || dropped {
-		return
+		return Report{}, false
 	}
-	o.apply(Parse(text))
+	report := Parse(text)
+	o.apply(report)
+	switch report.Kind {
+	case "alarm", "error", "welcome", "message":
+		return report, true
+	case "ok":
+		// Not interesting in itself, but it answers for exactly one line the
+		// client sent, and somebody is counting.
+		return report, true
+	case "unknown":
+		// Not GRBL. Counted rather than announced, because at the wrong baud
+		// rate every line looks like this and the point is the total.
+		o.garbage++
+	}
+	return Report{}, false
 }
 
 func (o *Observer) apply(report Report) {
 	if report.Kind == "unknown" && report.Text == "" {
 		return
+	}
+	if report.Kind != "unknown" {
+		o.recognised++
 	}
 	o.machine.LastReportUnix = o.now().Unix()
 	switch report.Kind {
@@ -142,6 +189,20 @@ func (o *Observer) Silent(for_ time.Duration) bool {
 	return o.now().Sub(time.Unix(o.machine.LastReportUnix, 0)) > for_
 }
 
+// Gibberish reports whether the controller is answering with something that is
+// not GRBL at all.
+//
+// This is what the wrong baud rate looks like from here: bytes arrive, none of
+// them parse, and every one of them is noise. It is the single most common
+// setup mistake and the one the appliance can spot on its own - but only once
+// there is enough to judge, because a controller mid-line or a stray byte on a
+// good link must not be enough to raise it.
+func (o *Observer) Gibberish() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.recognised == 0 && o.garbage >= 5
+}
+
 // Reset forgets everything, for when the port is reopened and the reading
 // would otherwise describe a controller that is no longer there.
 func (o *Observer) Reset() {
@@ -150,4 +211,6 @@ func (o *Observer) Reset() {
 	o.machine = Machine{}
 	o.line.Reset()
 	o.dropped = false
+	o.garbage = 0
+	o.recognised = 0
 }

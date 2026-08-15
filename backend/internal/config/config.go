@@ -27,10 +27,10 @@ type System struct {
 
 type GRBL struct {
 	// Backend selects which service owns the serial port: the long-standing
-	// ser2net, or the appliance's own laserbridged. Both are shipped while
-	// laserbridged earns its keep; exactly one runs at a time, because two
-	// processes on one serial port is the failure this bridge exists to
-	// prevent.
+	// ser2net, or the appliance's own laserbridged. Both ship permanently -
+	// ser2net is the fallback, not a transitional measure (ADR 0011) - and
+	// exactly one runs at a time, because two processes on one serial port is
+	// the failure this bridge exists to prevent.
 	Backend        string `json:"backend"`
 	Device         string `json:"device"`
 	Baudrate       int    `json:"baudrate"`
@@ -42,6 +42,10 @@ type GRBL struct {
 	// machine is moving: "none", "hold" or "reset". This is a convenience, not
 	// a safety device - see docs/adr/0010.
 	OnDisconnect string `json:"on_disconnect"`
+	// MonitorPort serves a read-only copy of the traffic for diagnosis. Zero
+	// switches it off, which is the default: a port nobody asked for is a port
+	// nobody is watching.
+	MonitorPort int `json:"monitor_port"`
 }
 
 type Camera struct {
@@ -145,6 +149,11 @@ func (c Config) Validate() error {
 	default:
 		problems = append(problems, "grbl.on_disconnect must be none, hold or reset")
 	}
+	if c.GRBL.MonitorPort != 0 {
+		if err := validatePort("grbl.monitor_port", c.GRBL.MonitorPort); err != nil {
+			problems = append(problems, err.Error())
+		}
+	}
 	if !validDevice(c.Camera.Device, []string{"/dev/video", "/dev/v4l/by-id/"}) {
 		problems = append(problems, "camera.device must be a supported absolute device path")
 	}
@@ -170,8 +179,21 @@ func (c Config) Validate() error {
 	if c.Camera.Quality < 1 || c.Camera.Quality > 100 {
 		problems = append(problems, "camera.quality must be between 1 and 100")
 	}
-	if c.GRBL.Port == c.Camera.Port || c.GRBL.Port == 80 || c.Camera.Port == 80 || c.Camera.Port == 22 || c.GRBL.Port == 22 {
-		problems = append(problems, "service ports must be unique and must not use 22 or 80")
+	// Every listening port has to be its own, including the optional monitor
+	// port. Two services on one port means one of them silently does not start.
+	taken := map[int]string{22: "SSH", 80: "the web interface"}
+	for _, claim := range []struct {
+		name string
+		port int
+	}{{"grbl.port", c.GRBL.Port}, {"camera.port", c.Camera.Port}, {"grbl.monitor_port", c.GRBL.MonitorPort}} {
+		if claim.port == 0 {
+			continue
+		}
+		if owner, clash := taken[claim.port]; clash {
+			problems = append(problems, fmt.Sprintf("%s uses port %d, which belongs to %s", claim.name, claim.port, owner))
+			continue
+		}
+		taken[claim.port] = claim.name
 	}
 	if c.Network.Mode != "dhcp" && c.Network.Mode != "static" {
 		problems = append(problems, "network.mode must be dhcp or static")

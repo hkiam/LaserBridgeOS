@@ -30,7 +30,9 @@ func TestRejectsUnsafeValues(t *testing.T) {
 	}{
 		{"device traversal", func(c *Config) { c.GRBL.Device = "/dev/ttyUSB0/../x" }, "device path"},
 		{"hostname injection", func(c *Config) { c.System.Hostname = "laser;reboot" }, "hostname"},
-		{"port collision", func(c *Config) { c.Camera.Port = 23 }, "unique"},
+		{"port collision", func(c *Config) { c.Camera.Port = 23 }, "belongs to grbl.port"},
+		{"monitor on the web port", func(c *Config) { c.GRBL.MonitorPort = 80 }, "the web interface"},
+		{"monitor on the bridge port", func(c *Config) { c.GRBL.MonitorPort = 23 }, "belongs to grbl.port"},
 		{"oversized camera", func(c *Config) { c.Camera.Resolution = "9000x720" }, "too large"},
 		{"unknown disconnect action", func(c *Config) { c.GRBL.OnDisconnect = "stop" }, "on_disconnect"},
 	}

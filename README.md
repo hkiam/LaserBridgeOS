@@ -321,6 +321,90 @@ does not need guessing about.
 > situation safe. A hardware emergency stop needs none of that. Keep using the
 > machine's own.
 
+Why it is worth having anyway: with `M3` constant laser power, a stream that
+stops leaves the beam on at its last setting while the machine stands still.
+That is a hole in the workpiece at best. A feed hold in laser mode switches
+the beam off, which is precisely what nobody was there to do. ser2net cannot,
+because it never knew the client had gone. Check `$32` is 1 on your controller
+and prefer `M4` in LightBurn regardless — this setting is the second line of
+defence, not the first.
+
+### What happened
+
+A job that fails at three in the morning leaves a stopped machine and no
+explanation. The bridge keeps one:
+
+```console
+$ laserbridge grbl-journal
+[
+  {
+    "unix": 1786752191,
+    "kind": "error",
+    "text": "error:9",
+    "code": 9,
+    "state": "Idle",
+    "position": {"x": 112.4, "y": 68.02, "z": 0},
+    "line": "G1 X118 F900",
+    "context": ["G0 X112.4 Y68.02", "M3 S255", "G1 X118 F900"]
+  },
+  {"unix": 1786752206, "kind": "intervention", "text": "feed hold after the client disconnected while Run"}
+]
+```
+
+The `line` is the point. GRBL answers `error:9` and names no line number — but
+it answers in order, exactly one `ok` or `error:` per line it accepted, so the
+line a reply refers to is the oldest one not yet answered for. The bridge
+counts them and names it. When it cannot be sure — a client attached to a
+controller that was already working, so the count never lined up — it says
+nothing rather than guessing, and `context` still shows the neighbourhood.
+Alarms answer for no line, so they carry the position instead.
+
+Two hundred events are kept in memory and the notable ones survive a reboot in
+`/data/laserbridge/bridge-journal.log`, rotated at 256 KB. Status reports are
+not recorded; there are several a second during a job and they would bury the
+three lines that matter. `GET /api/grbl/journal` and the GRBL Bridge page show
+the same thing.
+
+### Not interrupting a job
+
+Saving GRBL settings restarts the bridge, installing an update rewrites a root
+slot, and rebooting is obvious. All three now refuse while the machine is
+moving:
+
+```console
+$ curl -X POST http://laserbridge.local/api/system/reboot
+{"error":"not rebooting while the machine is cutting at X 112.4 Y 68.02. Repeat with force=true if that is what you want.","busy":true}
+```
+
+Add `?force=true` to go ahead anyway. When the appliance cannot tell — ser2net
+in charge, or the daemon not answering — it allows: an appliance that refused
+to reboot because it was unsure would be worse than one that never asked.
+
+### Watching without interfering
+
+`grbl.monitor_port` opens a second TCP port that shows the traffic and accepts
+none of it. Whatever a watcher sends is read and thrown away, so watching a
+job cannot become part of it.
+
+```console
+$ nc laserbridge.local 2300
+# LaserBridgeOS monitor: > is towards the controller, < is from it. Input is ignored.
+> ?
+< <Run|MPos:112.400,68.020,0.000|FS:900,255>
+> G1 X118 F900
+< ok
+```
+
+It is off unless a port is set. Until now, watching what LightBurn and the
+controller said to each other meant taking the port away from LightBurn, which
+changes the situation you were investigating.
+
+### The wrong baud rate
+
+The most common setup mistake, and unmistakable from here: bytes arrive and
+none of them are GRBL. The status page says so instead of showing an empty
+machine panel and leaving you to wonder.
+
 Two details worth knowing. It holds the port open for its whole life rather
 than opening it per client, because opening a USB adapter toggles DTR and
 resets an Arduino-based GRBL controller — reconnecting LightBurn should not
@@ -339,8 +423,9 @@ a laptop on a stalled Wi-Fi link is still connected as far as the kernel is
 concerned, and without the deadline the bridge would wait on it forever while
 the controller's output piled up unread.
 
-The decisions behind all of this are in ADR 0009 (why our own bridge) and
-ADR 0010 (what it may do on its own). There will be no hardware interlock: a
+The decisions behind all of this are in ADR 0009 (why our own bridge),
+ADR 0010 (what it may do on its own) and ADR 0012 (evidence, restraint and a
+window). There will be no hardware interlock: a
 relay in the laser-enable line is the only thing that would remove the "it
 depends on this daemon" caveat, and this appliance will not get one. The
 caveat is permanent.

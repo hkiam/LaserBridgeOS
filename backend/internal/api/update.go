@@ -41,6 +41,11 @@ func (s *Server) installUpdate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "complete first-boot setup before installing updates")
 		return
 	}
+	// An update rewrites the inactive root slot and asks for a reboot at the
+	// end. Neither is a thing to start while the laser is cutting.
+	if s.refuseWhileBusy(w, r, "not installing an update") {
+		return
+	}
 	if !s.updateMu.TryLock() {
 		writeError(w, http.StatusConflict, "another update is already running")
 		return

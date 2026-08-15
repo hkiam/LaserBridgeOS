@@ -89,6 +89,8 @@ func setValue(c *Config, section, key, raw string) error {
 		c.GRBL.KickOldUser, err = boolValue()
 	case "grbl.on_disconnect":
 		c.GRBL.OnDisconnect, err = stringValue()
+	case "grbl.monitor_port":
+		c.GRBL.MonitorPort, err = intValue()
 	case "camera.device":
 		c.Camera.Device, err = stringValue()
 	case "camera.format":
@@ -145,8 +147,8 @@ func MarshalYAML(c Config) ([]byte, error) {
 	q := strconv.Quote
 	var b strings.Builder
 	fmt.Fprintf(&b, "system:\n  hostname: %s\n  setup_complete: %t\n", q(c.System.Hostname), c.System.SetupComplete)
-	fmt.Fprintf(&b, "grbl:\n  backend: %s\n  device: %s\n  baudrate: %d\n  port: %d\n  max_connections: %d\n  reconnect: %t\n  kick_old_user: %t\n  on_disconnect: %s\n",
-		q(c.GRBL.Backend), q(c.GRBL.Device), c.GRBL.Baudrate, c.GRBL.Port, c.GRBL.MaxConnections, c.GRBL.Reconnect, c.GRBL.KickOldUser, q(c.GRBL.OnDisconnect))
+	fmt.Fprintf(&b, "grbl:\n  backend: %s\n  device: %s\n  baudrate: %d\n  port: %d\n  max_connections: %d\n  reconnect: %t\n  kick_old_user: %t\n  on_disconnect: %s\n  monitor_port: %d\n",
+		q(c.GRBL.Backend), q(c.GRBL.Device), c.GRBL.Baudrate, c.GRBL.Port, c.GRBL.MaxConnections, c.GRBL.Reconnect, c.GRBL.KickOldUser, q(c.GRBL.OnDisconnect), c.GRBL.MonitorPort)
 	fmt.Fprintf(&b, "camera:\n  device: %s\n  format: %s\n  resolution: %s\n  fps: %d\n  port: %d\n  quality: %d\n",
 		q(c.Camera.Device), q(c.Camera.Format), q(c.Camera.Resolution), c.Camera.FPS, c.Camera.Port, c.Camera.Quality)
 	fmt.Fprintf(&b, "ssh:\n  enabled: %t\n  password_authentication: %t\n", c.SSH.Enabled, c.SSH.PasswordAuthentication)

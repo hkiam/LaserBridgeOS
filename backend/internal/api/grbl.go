@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/laserbridgeos/laserbridgeos/backend/internal/config"
 	"github.com/laserbridgeos/laserbridgeos/backend/internal/proxy"
@@ -43,6 +44,34 @@ func (s *Server) grblStatus(w http.ResponseWriter, _ *http.Request) {
 		"backend":   cfg.GRBL.Backend,
 		"bridge":    status,
 	})
+}
+
+// grblJournal hands out what the bridge has recorded.
+//
+// A separate endpoint from the status: the status page asks every couple of
+// seconds and has no business carrying two hundred events with it.
+func (s *Server) grblJournal(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed >= 1 && parsed <= 200 {
+			limit = parsed
+		}
+	}
+	cfg, err := s.Store.Load()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if cfg.GRBL.Backend != config.BackendLaserbridged {
+		writeJSON(w, http.StatusOK, map[string]any{"available": false, "events": []proxy.Event{}})
+		return
+	}
+	events, err := proxy.ReadJournal(s.bridgeSocket(), limit)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"available": false, "events": []proxy.Event{}, "reason": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"available": true, "events": events})
 }
 
 func (s *Server) bridgeSocket() string {

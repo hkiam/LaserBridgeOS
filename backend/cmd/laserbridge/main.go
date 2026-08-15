@@ -37,7 +37,7 @@ func run(args []string) error {
 	runner := lbruntime.ExecRunner{}
 	manager := &lbruntime.Manager{Store: store, Dir: runtimeDir, DataDir: dataDir, Run: runner}
 	if len(args) == 0 {
-		return errors.New("usage: laserbridge <serve|init|apply|run-ustreamer|ssh-enabled|boot-confirm|grbl-backend|grbl-status>")
+		return errors.New("usage: laserbridge <serve|init|apply|run-ustreamer|ssh-enabled|boot-confirm|grbl-backend|grbl-status|grbl-journal>")
 	}
 	switch args[0] {
 	case "init":
@@ -57,6 +57,19 @@ func run(args []string) error {
 			return err
 		}
 		encoded, err := json.MarshalIndent(status, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(encoded))
+		return nil
+	case "grbl-journal":
+		// What went wrong lately, newest last. Reads the daemon's record over
+		// the same socket the web interface uses.
+		events, err := proxy.ReadJournal(getenv("LASERBRIDGE_BRIDGE_SOCKET", "/run/laserbridge/laserbridged.sock"), 0)
+		if err != nil {
+			return err
+		}
+		encoded, err := json.MarshalIndent(events, "", "  ")
 		if err != nil {
 			return err
 		}

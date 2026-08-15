@@ -155,3 +155,37 @@ label.choice input { width: 17px; height: 17px; accent-color: var(--accent); }
   font-size: 0.8rem;
   opacity: 0.7;
 }
+
+.journal-intro { margin: 0 0 0.75rem; font-size: 0.85rem; }
+.journal-row {
+  display: grid;
+  grid-template-columns: minmax(9rem, auto) 6rem 1fr auto;
+  gap: 0.5rem 0.75rem;
+  align-items: baseline;
+  padding: 0.5rem 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 0.85rem;
+}
+.journal-row time { opacity: 0.6; font-variant-numeric: tabular-nums; }
+.journal-kind {
+  text-transform: uppercase;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  opacity: 0.8;
+}
+.journal-alarm .journal-kind, .journal-error .journal-kind { color: #ff6b6b; opacity: 1; }
+.journal-intervention .journal-kind, .journal-fault .journal-kind { color: #f0b429; opacity: 1; }
+.journal-text { word-break: break-word; }
+.journal-where { opacity: 0.7; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.journal-context {
+  grid-column: 1 / -1;
+  margin: 0.25rem 0 0;
+  padding: 0.5rem 0.75rem;
+  overflow-x: auto;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+  font-size: 0.8rem;
+}
+@media (max-width: 640px) {
+  .journal-row { grid-template-columns: 1fr; }
+}

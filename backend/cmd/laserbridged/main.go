@@ -46,6 +46,10 @@ func run(logger *log.Logger) error {
 		// steering one laser is the failure it exists to prevent.
 		KickOldClient: cfg.GRBL.KickOldUser,
 		OnDisconnect:  cfg.GRBL.OnDisconnect,
+		// The record of what went wrong outlives a reboot, which is the whole
+		// point of it; /data is the only writable place on this appliance.
+		JournalPath: filepath.Join(dataDir, "laserbridge", "bridge-journal.log"),
+		MonitorPort: cfg.GRBL.MonitorPort,
 	}, logger)
 
 	done := make(chan struct{})

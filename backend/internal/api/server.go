@@ -55,6 +55,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/status", s.status)
 	mux.HandleFunc("GET /api/devices", s.devices)
 	mux.HandleFunc("GET /api/grbl", s.grblStatus)
+	mux.HandleFunc("GET /api/grbl/journal", s.grblJournal)
 	mux.HandleFunc("GET /api/config", s.getConfig)
 	mux.HandleFunc("PUT /api/config", s.mutation(s.putConfig))
 	mux.HandleFunc("POST /api/services/{service}/{action}", s.mutation(s.serviceAction))
@@ -162,6 +163,11 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
+	// Saving GRBL settings restarts the bridge, which drops the client. Other
+	// sections do not touch it, so only this one has to ask.
+	if previous.GRBL != next.GRBL && s.refuseWhileBusy(w, r, "not restarting the bridge") {
+		return
+	}
 	if err := s.Store.Save(next); err != nil {
 		writeError(w, http.StatusInternalServerError, "save failed: "+err.Error())
 		return
@@ -252,9 +258,12 @@ func (s *Server) serviceAction(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "service": service, "action": action})
 }
 
-func (s *Server) reboot(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) reboot(w http.ResponseWriter, r *http.Request) {
 	if s.Runner == nil {
 		writeError(w, http.StatusServiceUnavailable, "reboot is unavailable")
+		return
+	}
+	if s.refuseWhileBusy(w, r, "not rebooting") {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "rebooting"})
