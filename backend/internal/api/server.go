@@ -84,7 +84,7 @@ func (s *Server) Handler() http.Handler {
 		})
 	}
 	if s.WebRoot != "" {
-		mux.Handle("/", http.FileServer(http.Dir(s.WebRoot)))
+		mux.Handle("/", s.staticFiles())
 	}
 	return s.securityHeaders(mux)
 }
