@@ -141,3 +141,17 @@ label.choice input { width: 17px; height: 17px; accent-color: var(--accent); }
   .setup-fields, .key-options { padding-left: 0; }
   .key-confirm { margin-left: 0; }
 }
+
+.machine-card .primary-stats dd { font-variant-numeric: tabular-nums; }
+.machine-note {
+  margin: 0.75rem 0 0;
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid var(--accent, #f0b429);
+  background: rgba(240, 180, 41, 0.08);
+  font-size: 0.85rem;
+}
+.machine-warning {
+  margin: 0.75rem 0 0;
+  font-size: 0.8rem;
+  opacity: 0.7;
+}

@@ -38,6 +38,10 @@ type GRBL struct {
 	MaxConnections int    `json:"max_connections"`
 	Reconnect      bool   `json:"reconnect"`
 	KickOldUser    bool   `json:"kick_old_user"`
+	// OnDisconnect is what the bridge does when the client vanishes while the
+	// machine is moving: "none", "hold" or "reset". This is a convenience, not
+	// a safety device - see docs/adr/0010.
+	OnDisconnect string `json:"on_disconnect"`
 }
 
 type Camera struct {
@@ -76,6 +80,7 @@ func Default() Config {
 			Backend: BackendSer2net,
 			Device:  "/dev/ttyUSB0", Baudrate: 115200, Port: 23,
 			MaxConnections: 1, Reconnect: true, KickOldUser: true,
+			OnDisconnect: DisconnectHold,
 		},
 		Camera: Camera{
 			Device: "/dev/video0", Format: "MJPEG", Resolution: "1280x720",
@@ -94,6 +99,19 @@ func Default() Config {
 const (
 	BackendSer2net      = "ser2net"
 	BackendLaserbridged = "laserbridged"
+)
+
+// What the bridge does when a client disappears while the machine is moving.
+const (
+	// DisconnectNone forwards nothing. The machine finishes whatever is in its
+	// planner buffer, as it did before the bridge could tell the difference.
+	DisconnectNone = "none"
+	// DisconnectHold sends a feed hold, which pauses motion and switches the
+	// laser off while keeping the position - a job can be resumed afterwards.
+	DisconnectHold = "hold"
+	// DisconnectReset sends a feed hold and then a soft reset, which also
+	// clears the planner buffer. The job is over, but nothing keeps moving.
+	DisconnectReset = "reset"
 )
 
 var (
@@ -121,6 +139,11 @@ func (c Config) Validate() error {
 	}
 	if c.GRBL.MaxConnections < 1 || c.GRBL.MaxConnections > 16 {
 		problems = append(problems, "grbl.max_connections must be between 1 and 16")
+	}
+	switch c.GRBL.OnDisconnect {
+	case DisconnectNone, DisconnectHold, DisconnectReset:
+	default:
+		problems = append(problems, "grbl.on_disconnect must be none, hold or reset")
 	}
 	if !validDevice(c.Camera.Device, []string{"/dev/video", "/dev/v4l/by-id/"}) {
 		problems = append(problems, "camera.device must be a supported absolute device path")

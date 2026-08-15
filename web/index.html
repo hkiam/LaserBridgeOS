@@ -84,7 +84,7 @@
               <div><dt>Endpoint</dt><dd id="dash-grbl-port">TCP :—</dd></div>
               <div><dt>Clients</dt><dd id="dash-grbl-clients">0</dd></div>
             </dl>
-            <button class="button small service-action" data-service="ser2net" data-action="restart">Restart bridge</button>
+            <button class="button small service-action" data-grbl data-service="ser2net" data-action="restart">Restart bridge</button>
           </article>
 
           <article class="card camera-card">
@@ -114,16 +114,32 @@
 
       <section class="panel" id="panel-grbl">
         <div class="heading"><div><p class="eyebrow">SERIAL TO TCP</p><h1>GRBL Bridge</h1></div></div>
+
+        <article class="card machine-card" id="machine-card" hidden>
+          <div class="card-head"><h2>Machine</h2><span class="badge" id="machine-badge">UNKNOWN</span></div>
+          <dl class="primary-stats compact">
+            <div><dt>Bridge</dt><dd id="machine-bridge-state">—</dd></div>
+            <div><dt>Client</dt><dd id="machine-client">none</dd></div>
+            <div><dt>Position</dt><dd id="machine-position">—</dd></div>
+            <div><dt>Feed / power</dt><dd id="machine-feed">—</dd></div>
+            <div><dt>Transferred</dt><dd id="machine-bytes">—</dd></div>
+          </dl>
+          <p class="machine-note" id="machine-note" hidden></p>
+          <p class="machine-warning">The bridge can pause an unattended machine, but it depends on this appliance, the cable and the controller answering. It is not an emergency stop — use the machine's own.</p>
+        </article>
+
         <form class="card form-card config-form" id="grbl-form">
           <div class="form-grid">
             <label class="wide">Serial device<input name="device" list="serial-devices" required autocomplete="off"><datalist id="serial-devices"></datalist><small>Stable /dev/serial/by-id paths are preferred.</small></label>
+            <label>Bridge service<select name="backend"><option value="ser2net">ser2net (proven)</option><option value="laserbridged">laserbridged (reports machine state)</option></select><small>Only one may hold the serial port.</small></label>
+            <label>If the client disconnects<select name="on_disconnect"><option value="none">Let the machine finish its buffer</option><option value="hold">Feed hold while moving</option><option value="reset">Feed hold, then soft reset</option></select><small>laserbridged only.</small></label>
             <label>Baud rate<select name="baudrate"><option>9600</option><option>19200</option><option>38400</option><option>57600</option><option selected>115200</option><option>230400</option><option>250000</option><option>500000</option><option>1000000</option></select></label>
             <label>TCP port<input name="port" type="number" min="1" max="65535" required></label>
             <label>Maximum clients<input name="max_connections" type="number" min="1" max="16" required></label>
             <label class="toggle"><input name="reconnect" type="checkbox"><span>Reconnect when device returns</span></label>
             <label class="toggle"><input name="kick_old_user" type="checkbox"><span>Kick old client on new connection</span></label>
           </div>
-          <div class="actions"><button type="submit" class="button primary">Save GRBL settings</button><button type="button" class="button service-action" data-service="ser2net" data-action="restart">Restart</button><button type="button" class="button danger service-action" data-service="ser2net" data-action="stop">Stop</button></div>
+          <div class="actions"><button type="submit" class="button primary">Save GRBL settings</button><button type="button" class="button service-action" data-grbl data-service="ser2net" data-action="restart">Restart</button><button type="button" class="button danger service-action" data-grbl data-service="ser2net" data-action="stop">Stop</button></div>
         </form>
       </section>
 

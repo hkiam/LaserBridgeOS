@@ -27,12 +27,14 @@ import (
 const csrfCookie = "laserbridge_csrf"
 
 type Server struct {
-	Store         *config.Store
-	Runtime       *lbruntime.Manager
-	Runner        lbruntime.Runner
-	Updater       *lbupdate.Manager
-	WebRoot       string
-	VersionPath   string
+	Store       *config.Store
+	Runtime     *lbruntime.Manager
+	Runner      lbruntime.Runner
+	Updater     *lbupdate.Manager
+	WebRoot     string
+	VersionPath string
+	// BridgeSocket is where laserbridged answers; empty means the default.
+	BridgeSocket  string
 	WirelessSysfs string
 	Logger        *log.Logger
 	mu            sync.Mutex
@@ -52,6 +54,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/update/rollback", s.mutation(s.rollbackUpdate))
 	mux.HandleFunc("GET /api/status", s.status)
 	mux.HandleFunc("GET /api/devices", s.devices)
+	mux.HandleFunc("GET /api/grbl", s.grblStatus)
 	mux.HandleFunc("GET /api/config", s.getConfig)
 	mux.HandleFunc("PUT /api/config", s.mutation(s.putConfig))
 	mux.HandleFunc("POST /api/services/{service}/{action}", s.mutation(s.serviceAction))

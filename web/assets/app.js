@@ -67,7 +67,11 @@ async function loadStatus() {
     setText('#dash-camera-device', status.config.camera_device);
     setText('#dash-camera-mode', status.config.camera_mode);
     setText('#version', `LaserBridgeOS ${status.version}`);
-    badge('#ser2net-badge', status.services.ser2net);
+    // Two GRBL backends ship; report on whichever one the configuration has
+    // put in charge of the serial port.
+    const backend = status.config.grbl_backend || 'ser2net';
+    badge('#ser2net-badge', status.services[backend]);
+    $$('.service-action[data-grbl]').forEach(button => { button.dataset.service = backend; });
     badge('#ustreamer-badge', status.services.ustreamer);
     renderServices(status.services);
     const preview = $('#camera-preview');
@@ -82,7 +86,7 @@ async function loadStatus() {
 }
 
 function renderServices(services) {
-  const names = {'laserbridge-web': 'Web interface', ser2net: 'GRBL bridge', ustreamer: 'Camera stream', sshd: 'SSH', 'avahi-daemon': 'mDNS / Bonjour'};
+  const names = {'laserbridge-web': 'Web interface', ser2net: 'GRBL bridge (ser2net)', laserbridged: 'GRBL bridge (laserbridged)', ustreamer: 'Camera stream', sshd: 'SSH', 'avahi-daemon': 'mDNS / Bonjour'};
   $('#services').replaceChildren(...Object.entries(names).map(([key, label]) => {
     const row = document.createElement('div');
     row.className = 'service-row';
@@ -94,6 +98,50 @@ function renderServices(services) {
   }));
 }
 
+async function loadMachine() {
+  const card = $('#machine-card');
+  let answer;
+  try {
+    answer = await request('/api/grbl');
+  } catch (error) {
+    card.hidden = true;
+    return;
+  }
+  // With ser2net in charge there is nothing to ask and nothing to show.
+  card.hidden = !answer.available;
+  if (!answer.available) return;
+
+  const bridge = answer.bridge;
+  const machine = bridge.machine || {};
+  const state = machine.state || bridge.state;
+  const element = $('#machine-badge');
+  element.textContent = state;
+  element.className = `badge ${machineClass(machine.state, bridge.state)}`;
+
+  setText('#machine-bridge-state', bridge.state);
+  setText('#machine-client', bridge.client || 'none');
+  setText('#machine-position', machine.has_position
+    ? `X ${machine.position.x.toFixed(2)}  Y ${machine.position.y.toFixed(2)}  Z ${machine.position.z.toFixed(2)}`
+    : '—');
+  setText('#machine-feed', machine.state ? `${machine.feed || 0} mm/min · ${machine.spindle || 0}` : '—');
+  setText('#machine-bytes', `${bytes(bridge.rx_bytes)} in · ${bytes(bridge.tx_bytes)} out`);
+
+  // Anything the bridge did on its own accord is worth saying plainly: an
+  // operator who finds a paused machine should not have to guess why.
+  const note = $('#machine-note');
+  const text = bridge.controller_silent
+    ? 'The controller has stopped answering while a client is connected.'
+    : bridge.last_intervention || bridge.last_error || '';
+  note.textContent = text;
+  note.hidden = !text;
+}
+
+function machineClass(machineState, bridgeState) {
+  if (machineState === 'Alarm') return 'stopped';
+  if (machineState) return 'running';
+  return bridgeState === 'CLIENT_CONNECTED' || bridgeState === 'LISTENING' ? 'running' : 'stopped';
+}
+
 async function loadConfig() {
   config = await request('/api/config');
   const grbl = $('#grbl-form').elements;
@@ -103,6 +151,8 @@ async function loadConfig() {
   grbl.max_connections.value = config.grbl.max_connections;
   grbl.reconnect.checked = config.grbl.reconnect;
   grbl.kick_old_user.checked = config.grbl.kick_old_user;
+  grbl.backend.value = config.grbl.backend;
+  grbl.on_disconnect.value = config.grbl.on_disconnect;
   const camera = $('#camera-form').elements;
   camera.device.value = config.camera.device;
   camera.format.value = config.camera.format;
@@ -176,7 +226,7 @@ async function saveConfig(message) {
 $('#grbl-form').addEventListener('submit', async event => {
   event.preventDefault();
   const f = event.currentTarget.elements;
-  Object.assign(config.grbl, {device: f.device.value, baudrate: Number(f.baudrate.value), port: Number(f.port.value), max_connections: Number(f.max_connections.value), reconnect: f.reconnect.checked, kick_old_user: f.kick_old_user.checked});
+  Object.assign(config.grbl, {device: f.device.value, baudrate: Number(f.baudrate.value), port: Number(f.port.value), max_connections: Number(f.max_connections.value), reconnect: f.reconnect.checked, kick_old_user: f.kick_old_user.checked, backend: f.backend.value, on_disconnect: f.on_disconnect.value});
   try { await saveConfig('GRBL settings saved'); } catch (error) { toast(error.message, true); }
 });
 $('#camera-form').addEventListener('submit', async event => {
@@ -416,7 +466,11 @@ async function start() {
     }
     await Promise.all([loadConfig(), loadStatus(), loadUpdateStatus()]);
     await loadDevices();
+    await loadMachine();
     setInterval(loadStatus, 5000);
+    // The machine reading is asked for more often than the rest: it is the
+    // one thing on the page that changes while a job runs.
+    setInterval(loadMachine, 2000);
   } catch (error) { toast(error.message, true); }
 }
 start();

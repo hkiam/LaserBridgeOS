@@ -45,6 +45,7 @@ func run(logger *log.Logger) error {
 		// serve several. This bridge serves one on purpose: two applications
 		// steering one laser is the failure it exists to prevent.
 		KickOldClient: cfg.GRBL.KickOldUser,
+		OnDisconnect:  cfg.GRBL.OnDisconnect,
 	}, logger)
 
 	done := make(chan struct{})
@@ -63,8 +64,8 @@ func run(logger *log.Logger) error {
 		}
 	}()
 
-	logger.Printf("bridging %s at %d baud to TCP port %d",
-		cfg.GRBL.Device, cfg.GRBL.Baudrate, cfg.GRBL.Port)
+	logger.Printf("bridging %s at %d baud to TCP port %d; on disconnect: %s",
+		cfg.GRBL.Device, cfg.GRBL.Baudrate, cfg.GRBL.Port, cfg.GRBL.OnDisconnect)
 	return bridge.Run(done, nil)
 }
 

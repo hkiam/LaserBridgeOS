@@ -8,14 +8,28 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/laserbridgeos/laserbridgeos/backend/internal/config"
 )
 
 // startBridge runs a bridge against a pseudo-terminal and returns the
 // controller side of it, the address to connect to, and a stop function.
 func startBridge(t *testing.T, kickOldClient bool) (controller *os.File, address string, bridge *Bridge) {
+	t.Helper()
+	// The default for the older tests: the bridge carries bytes and does
+	// nothing on its own, which is what they were written to check.
+	return startBridgeWith(t, func(c *Config) {
+		c.KickOldClient = kickOldClient
+		c.OnDisconnect = DisconnectNone
+	})
+}
+
+// startBridgeWith is the same, with the configuration open to adjustment.
+func startBridgeWith(t *testing.T, adjust func(*Config)) (controller *os.File, address string, bridge *Bridge) {
 	t.Helper()
 	controller, devicePath, err := openPTY()
 	if err != nil {
@@ -30,13 +44,15 @@ func startBridge(t *testing.T, kickOldClient bool) (controller *os.File, address
 	// window in between is not worth a more elaborate arrangement in a test.
 	listener.Close()
 
-	bridge = New(Config{
-		Device:        devicePath,
-		Baudrate:      115200,
-		Port:          port,
-		KickOldClient: kickOldClient,
-		DeviceRetry:   20 * time.Millisecond,
-	}, nil)
+	settings := Config{
+		Device:      devicePath,
+		Baudrate:    115200,
+		Port:        port,
+		DeviceRetry: 20 * time.Millisecond,
+		HoldSettle:  500 * time.Millisecond,
+	}
+	adjust(&settings)
+	bridge = New(settings, nil)
 
 	done := make(chan struct{})
 	ready := make(chan struct{})
@@ -387,5 +403,321 @@ func TestStateMovesOnEvenWithoutADevice(t *testing.T) {
 	client.Close()
 	if state := waitForState(bridge, StateWaitingForDevice); state != StateWaitingForDevice {
 		t.Fatalf("state after disconnect = %s, want WAITING_FOR_DEVICE", state)
+	}
+}
+
+// tellMachine has the controller side announce a state, the way GRBL answers a
+// status request, and waits until the bridge has taken it in.
+func tellMachine(t *testing.T, controller *os.File, bridge *Bridge, line string) {
+	t.Helper()
+	if _, err := controller.Write([]byte(line + "\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return bridge.Status().Machine.LastReportUnix != 0 }, "the bridge to read the controller's report")
+}
+
+func TestReadsAlongWithoutAlteringTheStream(t *testing.T) {
+	controller, address, bridge := startBridge(t, true)
+	client, err := net.Dial("tcp", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	waitForState(bridge, StateClientConnected)
+
+	report := "<Run|MPos:12.500,3.000,0.000|FS:900,255>\r\n"
+	if _, err := controller.Write([]byte(report)); err != nil {
+		t.Fatal(err)
+	}
+	// The client must receive exactly what the controller sent - reading along
+	// happens on a copy.
+	if got := string(mustRead(t, client, len(report))); got != report {
+		t.Fatalf("client received %q, want %q", got, report)
+	}
+	waitFor(t, func() bool { return bridge.Status().Machine.State == "Run" }, "the machine reading to catch up")
+
+	machine := bridge.Status().Machine
+	if machine.Position.X != 12.5 || machine.Spindle != 255 {
+		t.Errorf("machine = %+v", machine)
+	}
+}
+
+func TestFeedHoldWhenClientVanishesMidJob(t *testing.T) {
+	controller, address, bridge := startBridgeWith(t, func(c *Config) {
+		c.KickOldClient = true
+		c.OnDisconnect = DisconnectHold
+	})
+	client, err := net.Dial("tcp", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForState(bridge, StateClientConnected)
+	tellMachine(t, controller, bridge, "<Run|MPos:1.000,1.000,0.000|FS:600,255>")
+
+	// The laptop goes to sleep mid-job.
+	client.Close()
+
+	if got := mustRead(t, controller, 1); got[0] != feedHold {
+		t.Fatalf("controller received %q, want a feed hold", got)
+	}
+	waitFor(t, func() bool { return bridge.Status().LastIntervention != "" }, "the intervention to be recorded")
+}
+
+func TestNoHoldWhenMachineIsIdle(t *testing.T) {
+	controller, address, bridge := startBridgeWith(t, func(c *Config) {
+		c.OnDisconnect = DisconnectHold
+	})
+	client, err := net.Dial("tcp", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForState(bridge, StateClientConnected)
+	tellMachine(t, controller, bridge, "<Idle|MPos:0.000,0.000,0.000|FS:0,0>")
+
+	client.Close()
+
+	// Nothing was moving, so nothing should have been sent. A hold here would
+	// leave the next client a paused machine to clear for no reason.
+	//
+	// Proved by what the controller sees next rather than by waiting for
+	// silence: the next client's first byte must be the first byte to arrive.
+	expectNothingWasInjected(t, controller, bridge, address)
+	if bridge.Status().LastIntervention != "" {
+		t.Errorf("intervention recorded for an idle machine: %q", bridge.Status().LastIntervention)
+	}
+}
+
+// expectNothingWasInjected checks that the bridge sent nothing of its own
+// after a client left, by having the next client send a byte that could not be
+// mistaken for a GRBL control character and requiring it to arrive first.
+func expectNothingWasInjected(t *testing.T, controller *os.File, bridge *Bridge, address string) {
+	t.Helper()
+	waitFor(t, func() bool { return bridge.handled.Load() > 0 }, "the departure to be handled")
+
+	next, err := net.Dial("tcp", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer next.Close()
+	if _, err := next.Write([]byte("Z")); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustRead(t, controller, 1); got[0] != 'Z' {
+		t.Fatalf("controller received %q before the next client's byte", got)
+	}
+}
+
+func TestResetWaitsForTheMachineToStop(t *testing.T) {
+	controller, address, bridge := startBridgeWith(t, func(c *Config) {
+		c.OnDisconnect = DisconnectReset
+		c.HoldSettle = 3 * time.Second
+	})
+	client, err := net.Dial("tcp", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForState(bridge, StateClientConnected)
+	tellMachine(t, controller, bridge, "<Run|MPos:1.000,1.000,0.000|FS:600,255>")
+	client.Close()
+
+	// First the hold.
+	if got := mustRead(t, controller, 1); got[0] != feedHold {
+		t.Fatalf("first byte = %q, want a feed hold", got)
+	}
+	// Then the bridge asks whether the machine has stopped. A soft reset
+	// during deceleration loses the position, so it must not arrive yet.
+	if got := mustRead(t, controller, 1); got[0] != statusReq {
+		t.Fatalf("second byte = %q, want a status request", got)
+	}
+	// The machine is still decelerating, then comes to rest.
+	if _, err := controller.Write([]byte("<Run|MPos:1.100,1.000,0.000|FS:200,255>\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return bridge.Status().Machine.Feed == 200 }, "the deceleration report to be read")
+	if _, err := controller.Write([]byte("<Hold:0|MPos:1.200,1.000,0.000|FS:0,0>\r\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Only now the reset. There may be further status requests in between.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		got := mustRead(t, controller, 1)
+		if got[0] == softReset {
+			break
+		}
+		if got[0] != statusReq {
+			t.Fatalf("unexpected byte %q while waiting for the soft reset", got)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no soft reset arrived")
+		}
+	}
+	waitFor(t, func() bool { return strings.Contains(bridge.Status().LastIntervention, "soft reset") }, "the reset to be recorded")
+}
+
+func TestDisconnectActionCanBeTurnedOff(t *testing.T) {
+	controller, address, bridge := startBridgeWith(t, func(c *Config) {
+		c.OnDisconnect = DisconnectNone
+	})
+	client, err := net.Dial("tcp", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForState(bridge, StateClientConnected)
+	tellMachine(t, controller, bridge, "<Run|MPos:1.000,1.000,0.000|FS:600,255>")
+	client.Close()
+	expectNothingWasInjected(t, controller, bridge, address)
+}
+
+// The proxy keeps its own copies of the disconnect actions so it does not
+// depend on the configuration package. This is the guard against the two
+// drifting apart.
+func TestDisconnectActionsMatchTheConfiguration(t *testing.T) {
+	for _, pair := range [][2]string{
+		{DisconnectNone, config.DisconnectNone},
+		{DisconnectHold, config.DisconnectHold},
+		{DisconnectReset, config.DisconnectReset},
+	} {
+		if pair[0] != pair[1] {
+			t.Errorf("proxy says %q, configuration says %q", pair[0], pair[1])
+		}
+	}
+}
+
+func TestControllerSilenceIsReportedNotActedOn(t *testing.T) {
+	controller, address, bridge := startBridgeWith(t, func(c *Config) {
+		c.OnDisconnect = DisconnectHold
+		c.SilenceAfter = time.Second
+	})
+	client, err := net.Dial("tcp", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	waitForState(bridge, StateClientConnected)
+	tellMachine(t, controller, bridge, "<Run|MPos:1.000,1.000,0.000|FS:600,255>")
+
+	if bridge.Status().ControllerSilent {
+		t.Fatal("reported silent immediately after a report")
+	}
+	waitFor(t, func() bool { return bridge.Status().ControllerSilent }, "the silence to be noticed")
+
+	// Noticing is all it does. GRBL only speaks when spoken to, so a quiet
+	// link is not evidence of a fault, and holding the machine on that
+	// suspicion would interrupt good work on a guess.
+	if bridge.Status().LastIntervention != "" {
+		t.Errorf("the bridge acted on silence: %q", bridge.Status().LastIntervention)
+	}
+	if _, err := client.Write([]byte("G0 X1\n")); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustRead(t, controller, 6); string(got) != "G0 X1\n" {
+		t.Fatalf("controller received %q; the stream was disturbed", got)
+	}
+}
+
+func TestSilenceNeedsAClient(t *testing.T) {
+	// Nobody attached means nobody is asking, so a quiet controller is
+	// entirely expected and must not be flagged.
+	controller, address, bridge := startBridgeWith(t, func(c *Config) {
+		c.OnDisconnect = DisconnectNone
+		c.SilenceAfter = 500 * time.Millisecond
+	})
+	client, err := net.Dial("tcp", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForState(bridge, StateClientConnected)
+	tellMachine(t, controller, bridge, "<Idle|MPos:0.000,0.000,0.000>")
+	client.Close()
+	waitForState(bridge, StateListening)
+
+	time.Sleep(time.Second)
+	if bridge.Status().ControllerSilent {
+		t.Error("a controller nobody is talking to was reported as silent")
+	}
+}
+
+func TestDeviceIsPickedUpWhenItComesBack(t *testing.T) {
+	// A pseudo-terminal cannot be unplugged and plugged back in, but a symlink
+	// can be re-pointed, and that is what /dev/ttyUSB0 amounts to from the
+	// bridge's side: a name that may resolve to different hardware over time.
+	first, firstPath, err := openPTY()
+	if err != nil {
+		t.Skipf("no pseudo-terminal available: %v", err)
+	}
+	link := filepath.Join(t.TempDir(), "ttyUSB-test")
+	if err := os.Symlink(firstPath, link); err != nil {
+		t.Fatal(err)
+	}
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	listener.Close()
+
+	bridge := New(Config{
+		Device: link, Baudrate: 115200, Port: port,
+		DeviceRetry: 20 * time.Millisecond, OnDisconnect: DisconnectNone,
+	}, nil)
+	done := make(chan struct{})
+	ready := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		if err := bridge.Run(done, ready); err != nil {
+			t.Errorf("bridge stopped: %v", err)
+		}
+	}()
+	<-ready
+	t.Cleanup(func() { close(done); <-finished })
+
+	waitFor(t, func() bool { return bridge.Status().Device != "" }, "the first device to be opened")
+	if _, err := first.Write([]byte("<Run|MPos:9.000,9.000,0.000>\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return bridge.Status().Machine.State == "Run" }, "a reading from the first device")
+
+	// Unplugged.
+	first.Close()
+	if state := waitForState(bridge, StateWaitingForDevice); state != StateWaitingForDevice {
+		t.Fatalf("state = %s, want WAITING_FOR_DEVICE", state)
+	}
+
+	// Plugged back in - a different tty behind the same name.
+	second, secondPath, err := openPTY()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secondPath, link); err != nil {
+		t.Fatal(err)
+	}
+
+	// Nobody restarts anything; the bridge finds it on its own.
+	if state := waitForState(bridge, StateListening); state != StateListening {
+		t.Fatalf("state = %s, want LISTENING after the device returned", state)
+	}
+	// And the reading describes the controller that is there now, not the one
+	// that was unplugged.
+	if machine := bridge.Status().Machine; machine.State != "" || machine.HasPosition {
+		t.Errorf("stale reading survived the swap: %+v", machine)
+	}
+
+	client, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if _, err := client.Write([]byte("$H\n")); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustRead(t, second, 3); string(got) != "$H\n" {
+		t.Fatalf("the new device received %q", got)
 	}
 }

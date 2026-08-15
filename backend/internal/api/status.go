@@ -35,6 +35,9 @@ type storageStatus struct {
 }
 
 type statusConfigFields struct {
+	// GRBLBackend is which of the two services owns the serial port, so the
+	// web interface reports on the one that is actually running.
+	GRBLBackend     string `json:"grbl_backend"`
 	GRBLDevice      string `json:"grbl_device"`
 	GRBLPort        int    `json:"grbl_port"`
 	CameraDevice    string `json:"camera_device"`
@@ -76,7 +79,8 @@ func (s *Server) status(w http.ResponseWriter, _ *http.Request) {
 		Devices: map[string]bool{"grbl": pathExists(cfg.GRBL.Device), "camera": pathExists(cfg.Camera.Device)},
 		Clients: map[string]int{"grbl": tcpClients(cfg.GRBL.Port)}, Version: version,
 		Config: statusConfigFields{
-			GRBLDevice: cfg.GRBL.Device, GRBLPort: cfg.GRBL.Port, CameraDevice: cfg.Camera.Device,
+			GRBLBackend: cfg.GRBL.Backend,
+			GRBLDevice:  cfg.GRBL.Device, GRBLPort: cfg.GRBL.Port, CameraDevice: cfg.Camera.Device,
 			CameraStreamURL: "http://" + cfg.System.Hostname + ".local:" + strconv.Itoa(cfg.Camera.Port) + "/stream",
 			CameraMode:      cfg.Camera.Resolution + " @ " + strconv.Itoa(cfg.Camera.FPS) + " FPS",
 		},

@@ -32,6 +32,7 @@ func TestRejectsUnsafeValues(t *testing.T) {
 		{"hostname injection", func(c *Config) { c.System.Hostname = "laser;reboot" }, "hostname"},
 		{"port collision", func(c *Config) { c.Camera.Port = 23 }, "unique"},
 		{"oversized camera", func(c *Config) { c.Camera.Resolution = "9000x720" }, "too large"},
+		{"unknown disconnect action", func(c *Config) { c.GRBL.OnDisconnect = "stop" }, "on_disconnect"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -41,6 +42,29 @@ func TestRejectsUnsafeValues(t *testing.T) {
 				t.Fatalf("Validate() = %v, want containing %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestOlderConfigGetsSafeDisconnectDefault(t *testing.T) {
+	// A configuration written before the bridge could act on a disconnect has
+	// no such key. It must load, and it must land on the cautious setting
+	// rather than on the zero value, which is not a valid action at all.
+	data, err := MarshalYAML(Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kept []string
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.Contains(line, "on_disconnect") {
+			kept = append(kept, line)
+		}
+	}
+	parsed, err := ParseYAML([]byte(strings.Join(kept, "\n")))
+	if err != nil {
+		t.Fatalf("ParseYAML() = %v", err)
+	}
+	if parsed.GRBL.OnDisconnect != DisconnectHold {
+		t.Errorf("on_disconnect = %q, want %q", parsed.GRBL.OnDisconnect, DisconnectHold)
 	}
 }
 

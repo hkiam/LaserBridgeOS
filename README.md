@@ -229,17 +229,20 @@ grbl:
 ```
 
 `ser2net` is the default and has carried this job from the start.
-`laserbridged` is the appliance's own bridge, being introduced in stages: for
-now it does exactly what ser2net does — a transparent TCP-to-serial proxy —
-so LightBurn connects the same way and every byte, including the control
-characters `0x18`, `!`, `~` and `?`, crosses unchanged.
+`laserbridged` is the appliance's own bridge. It carries bytes exactly as
+ser2net does — LightBurn connects the same way and every byte, including the
+control characters `0x18`, `!`, `~` and `?`, crosses unchanged — and it also
+understands what it is carrying.
 
 Both services are installed and each refuses to start unless the
 configuration names it, so exactly one ever owns the serial port. Switching is
 a configuration change; changing it on the System page stops one and starts
 the other.
 
-What laserbridged adds today is knowing what it is doing:
+### What the machine is doing
+
+`laserbridged` reads along with the controller's replies and keeps the
+result:
 
 ```console
 $ laserbridge grbl-status
@@ -249,13 +252,60 @@ $ laserbridge grbl-status
   "tcp_port": 23,
   "client": "192.168.178.42:53122",
   "rx_bytes": 819233,
-  "tx_bytes": 55342
+  "tx_bytes": 55342,
+  "machine": {
+    "state": "Run",
+    "position": {"x": 112.4, "y": 68.02, "z": 0},
+    "has_position": true,
+    "feed": 900,
+    "spindle": 255,
+    "last_report_unix": 1786579200,
+    "resets": 0
+  },
+  "controller_silent": false
 }
 ```
 
-That comes over a Unix socket at `/run/laserbridge/laserbridged.sock`, which
-is also how the web backend will ask: nothing but the daemon opens the serial
-port.
+That comes over a Unix socket at `/run/laserbridge/laserbridged.sock`, and it
+is also where the web backend asks — `GET /api/grbl` returns the same reading,
+or `available: false` when ser2net is in charge and there is nobody to ask.
+Nothing but the daemon opens the serial port.
+
+Reading along happens on a copy of what has already gone to the client, so a
+misparsed line can produce a wrong number on the status page but never a wrong
+byte at the controller.
+
+`controller_silent` is set when a controller that had been answering stops
+while a client is attached. It is reported, never acted on: GRBL only speaks
+when spoken to, so a quiet link usually means the client has nothing to ask.
+
+### When the client disappears mid-job
+
+A laptop that closes its lid leaves the controller working through its planner
+buffer with nobody watching. `grbl.on_disconnect` decides what happens:
+
+| Value | Effect |
+| --- | --- |
+| `none` | Nothing. The machine finishes its buffer. |
+| `hold` (default) | A feed hold, if the machine is moving. Motion pauses, the beam goes off, the position is kept, the job can be resumed. |
+| `reset` | A feed hold, then — once the machine reports it has stopped — a soft reset. The job ends, but nothing is left moving. |
+
+`reset` waits because a soft reset while the axes are still turning loses the
+position. The bridge sends `?` until GRBL reports a state that means standing
+still, and gives up after three seconds rather than wait forever. Note that
+`Hold` is one of those states and `Idle` is not required: a held machine has
+stopped, it simply still has a job in its buffer.
+
+An idle machine is left alone; a hold would only leave the next client
+something to clear. A service restart does not count as a client walking away,
+so changing settings during a job does not pause it. Whatever the bridge did
+is in `last_intervention` and on the GRBL Bridge page, so a paused machine
+does not need guessing about.
+
+> **This is not an emergency stop.** It needs the appliance running, the cable
+> seated and the controller answering, and it assumes a feed hold makes the
+> situation safe. A hardware emergency stop needs none of that. Keep using the
+> machine's own.
 
 Two details worth knowing. It holds the port open for its whole life rather
 than opening it per client, because opening a USB adapter toggles DTR and
@@ -263,9 +313,18 @@ resets an Arduino-based GRBL controller — reconnecting LightBurn should not
 reset the machine. And it prefers the stable `/dev/serial/by-id/` name over
 `/dev/ttyUSB0`, which can point at different hardware after a reboot.
 
-Still to come, in this order: parsing GRBL replies, holding the machine when a
-client disappears mid-job, device hotplug, and web interface integration. See
-ADR 0009.
+An adapter that is unplugged is noticed: the client is dropped rather than
+left writing G-code into a void, and the port is reopened when the adapter
+comes back — no restart needed.
+
+The decisions behind all of this are in ADR 0009 (why our own bridge) and
+ADR 0010 (what it may do on its own). A hardware interlock — a relay in the
+laser-enable line — would remove the "it depends on this daemon" caveat
+entirely, and is not designed here because the appliance has no such hardware.
+
+`tests/hardware/grbl-smoke-test.sh <host>` checks the whole path against a
+real controller; everything else is covered by tests against a
+pseudo-terminal.
 
 ## What fills the image
 
