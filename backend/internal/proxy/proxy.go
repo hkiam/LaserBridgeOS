@@ -16,6 +16,7 @@ package proxy
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -78,6 +79,9 @@ type Config struct {
 	// SilenceAfter is how long a controller that had been answering may say
 	// nothing before the bridge reports it as silent.
 	SilenceAfter time.Duration
+	// ClientWriteTimeout bounds how long a single write towards the client may
+	// take before the client is treated as dead.
+	ClientWriteTimeout time.Duration
 }
 
 // Status is the snapshot handed out over the status socket.
@@ -146,6 +150,9 @@ func New(config Config, logger *log.Logger) *Bridge {
 	}
 	if config.SilenceAfter <= 0 {
 		config.SilenceAfter = 10 * time.Second
+	}
+	if config.ClientWriteTimeout <= 0 {
+		config.ClientWriteTimeout = 5 * time.Second
 	}
 	return &Bridge{config: config, logger: logger, state: StateStopped, observer: grbl.NewObserver()}
 }
@@ -383,12 +390,25 @@ func (b *Bridge) currentClient() net.Conn {
 	return b.client
 }
 
+// writeToClient forwards the controller's output to whoever is attached.
+//
+// The deadline is not a nicety. Without one, a client whose TCP window has
+// closed - a laptop on a stalled Wi-Fi link, still connected as far as the
+// kernel is concerned - blocks this write indefinitely, and with it the only
+// goroutine reading the serial port. The controller keeps talking into a
+// 4 KB kernel buffer that nobody is draining, and its output is lost. A
+// client that cannot take a status report within five seconds is in no state
+// to run a job, so it is dropped and the machine keeps being read.
 func (b *Bridge) writeToClient(data []byte) {
 	client := b.currentClient()
 	if client == nil {
 		return
 	}
+	_ = client.SetWriteDeadline(time.Now().Add(b.config.ClientWriteTimeout))
 	if _, err := client.Write(data); err != nil {
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			b.setError(fmt.Errorf("client %s stopped accepting data; dropping it", client.RemoteAddr()))
+		}
 		// The client is gone; its own goroutine notices and tidies up.
 		_ = client.Close()
 	}

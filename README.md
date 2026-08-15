@@ -331,6 +331,14 @@ An adapter that is unplugged is noticed: the client is dropped rather than
 left writing G-code into a void, and the port is reopened when the adapter
 comes back — no restart needed.
 
+Two details that only matter when something is going wrong. The port is opened
+with `HUPCL` cleared, so DTR stays asserted when the daemon exits and
+restarting it does not reset an Arduino-based controller — a restart during a
+job costs nothing. And writes towards the client carry a five-second deadline:
+a laptop on a stalled Wi-Fi link is still connected as far as the kernel is
+concerned, and without the deadline the bridge would wait on it forever while
+the controller's output piled up unread.
+
 The decisions behind all of this are in ADR 0009 (why our own bridge) and
 ADR 0010 (what it may do on its own). There will be no hardware interlock: a
 relay in the laser-enable line is the only thing that would remove the "it

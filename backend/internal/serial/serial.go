@@ -97,6 +97,19 @@ func configure(fd int, baud int) error {
 	t.CFlag &^= syscall.CSIZE | syscall.PARENB | syscall.CSTOPB | crtscts
 	t.CFlag |= syscall.CS8 | syscall.CLOCAL | syscall.CREAD
 
+	// HUPCL off is the important one, and it is about DTR rather than about
+	// terminals.
+	//
+	// An Arduino-based GRBL controller resets when DTR is asserted, because
+	// the auto-reset circuit differentiates that edge onto the RESET pin.
+	// Opening the port asserts DTR - but only produces an edge if DTR was not
+	// asserted already. With HUPCL set, the kernel lowers DTR when the last
+	// process closes the port, so the next open produces exactly that edge:
+	// every restart of this daemon would reset the machine, mid-job included.
+	// With HUPCL clear, DTR stays up across a restart and the controller never
+	// notices we were gone.
+	t.CFlag &^= syscall.HUPCL
+
 	t.CFlag &^= cbaud
 	t.CFlag |= bother
 	t.ISpeed = uint32(baud)
