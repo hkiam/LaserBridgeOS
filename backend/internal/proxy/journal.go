@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bufio"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -18,10 +19,15 @@ import (
 //
 // What is recorded is what cannot be reconstructed afterwards: alarms and
 // their codes, the G-code line an error refers to, the controller resetting,
-// clients arriving and leaving, the adapter disappearing, and anything the
-// bridge did on its own accord. Status reports are not recorded. There are
-// several per second during a job and they would bury the three lines that
-// matter.
+// the adapter disappearing, and anything the bridge did on its own accord.
+// Status reports are not recorded. There are several per second during a job
+// and they would bury the three lines that matter.
+//
+// Clients arriving and leaving are kept in memory but not on disk - see
+// worthKeeping. A workshop laptop reconnecting a dozen times an afternoon
+// would push the entries worth having out of a bounded file. When the bridge
+// drops a client itself, that is recorded as an intervention instead, because
+// it is one.
 const (
 	// journalDepth is how many events are kept in memory to hand out.
 	journalDepth = 200
@@ -96,11 +102,70 @@ const journalQueue = 256
 func NewJournal(path string) *Journal {
 	j := &Journal{ring: make([]Event, journalDepth), path: path, now: time.Now}
 	if path != "" {
+		j.load()
 		j.writes = make(chan Event, journalQueue)
 		j.stopped = make(chan struct{})
 		go j.writeLoop()
 	}
 	return j
+}
+
+// load fills the ring from what earlier runs wrote.
+//
+// Without it the record survived a reboot on disk and was invisible in the web
+// interface, which is the wrong way round: the incidents worth reading about
+// are the ones that ended in a restart. A stationary beam is stopped, the
+// operator changes a setting, the bridge restarts - and the account of what
+// just happened is gone from the one place they were looking.
+//
+// Only what was worth writing down is here; the file never held the rest. The
+// "opened /dev/ttyUSB0" entry each run begins with is what separates one
+// session from the previous one on screen, so nothing has to be invented to
+// mark the boundary.
+func (j *Journal) load() {
+	var events []Event
+	// Oldest first: the rotated generation, then the current one.
+	for _, path := range []string{j.path + ".1", j.path} {
+		file, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		scanner := bufio.NewScanner(file)
+		scanner.Buffer(make([]byte, 0, 64<<10), 1<<20)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" {
+				continue
+			}
+			var event Event
+			// A half-written last line is what a power cut leaves behind. It is
+			// skipped rather than allowed to stop the rest from being read.
+			if json.Unmarshal([]byte(line), &event) != nil {
+				continue
+			}
+			events = append(events, event)
+			if len(events) > journalDepth {
+				events = events[1:]
+			}
+		}
+		_ = file.Close()
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	for _, event := range events {
+		j.push(event)
+	}
+}
+
+// push puts one event in the ring. The caller holds the lock.
+func (j *Journal) push(event Event) {
+	index := (j.first + j.count) % len(j.ring)
+	j.ring[index] = event
+	if j.count < len(j.ring) {
+		j.count++
+	} else {
+		j.first = (j.first + 1) % len(j.ring)
+	}
 }
 
 // Close stops the writer and waits for what is already queued. Calling it
@@ -182,13 +247,7 @@ func (j *Journal) Add(event Event) {
 		event.UptimeSeconds = int64(time.Since(started).Seconds())
 	}
 	j.mu.Lock()
-	index := (j.first + j.count) % len(j.ring)
-	j.ring[index] = event
-	if j.count < len(j.ring) {
-		j.count++
-	} else {
-		j.first = (j.first + 1) % len(j.ring)
-	}
+	j.push(event)
 	j.mu.Unlock()
 
 	if j.writes == nil || !worthKeeping(event.Kind) {
