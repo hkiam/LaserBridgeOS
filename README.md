@@ -389,6 +389,24 @@ one when nobody else has for a second. During a job LightBurn polls several
 times a second and the appliance stays quiet; when the conversation stops, it
 takes over the asking.
 
+**An intervention ends the connection.** If a client is still streaming when the
+bridge takes the machine over, it is told — `[MSG:LaserBridgeOS took over: …]`,
+which LightBurn prints in its console — and then dropped. This is not a
+courtesy. A soft reset empties GRBL's planner and its 128-byte receive buffer,
+and a sender that knows nothing about it keeps counting `ok`s against a buffer
+that no longer holds what it thinks: what follows is a stream of `error:9`, or
+G-code executed while the two ends disagree about where the job is. A controller
+that has been reset is not going to finish the job anyway. See ADR 0018.
+
+**What the controller says about its output has a date on it.** GRBL mentions
+its outputs only alongside `Ov:`, roughly every tenth report, and reports what
+the output was at that instant — which in laser mode with `M4` is genuinely off
+during rapids and between moves. So the GRBL page shows the reading with its
+age, and says "not conclusive" rather than "off" when a machine is cutting at a
+non-zero power. For the same reason the stationary check declines to act when
+the controller has said nothing about its outputs within the grace period, and
+records that it declined.
+
 An idle machine is left alone; a hold would only leave the next client
 something to clear. A service restart does not count as a client walking away,
 so changing settings during a job does not pause it. Whatever the bridge did
@@ -439,10 +457,14 @@ nothing rather than guessing, and `context` still shows the neighbourhood.
 Alarms answer for no line, so they carry the position instead.
 
 Two hundred events are kept in memory and the notable ones survive a reboot in
-`/data/laserbridge/bridge-journal.log`, rotated at 256 KB. Status reports are
-not recorded; there are several a second during a job and they would bury the
-three lines that matter. `GET /api/grbl/journal` and the GRBL Bridge page show
-the same thing.
+`/data/laserbridge/bridge-journal.log`, rotated at 256 KB. The file is read back
+into memory when the bridge starts, so an incident is still on the page after
+the restart it caused — which used to be exactly when it disappeared from view.
+Status reports are not recorded; there are several a second during a job and
+they would bury the three lines that matter. Routine client connects and
+disconnects stay in memory only, for the same reason; when the bridge drops a
+client itself, that is recorded as an intervention, because it is one.
+`GET /api/grbl/journal` and the GRBL Bridge page show the same thing.
 
 ### Not interrupting a job
 

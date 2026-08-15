@@ -145,6 +145,11 @@ type Bridge struct {
 	// clientMu guards which client currently owns the port.
 	clientMu sync.Mutex
 	client   net.Conn
+	// droppedByUs is the connection the bridge closed itself while taking the
+	// machine over, so the disconnect it caused is not mistaken for a client
+	// walking away. Held as the connection rather than a flag: a client that
+	// leaves of its own accord in the same moment must still be handled.
+	droppedByUs net.Conn
 
 	mu               sync.Mutex
 	state            State
@@ -612,7 +617,7 @@ func (b *Bridge) serveClient(conn net.Conn) {
 		// After the bookkeeping, not before: an intervention can take a few
 		// seconds, and the status should already read LISTENING rather than
 		// claim a client that has gone.
-		b.onClientGone()
+		b.onClientGone(conn)
 		return
 	}
 	b.logf("client %s disconnected", conn.RemoteAddr())

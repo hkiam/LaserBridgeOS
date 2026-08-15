@@ -1,8 +1,10 @@
 package proxy
 
 import (
+	"errors"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -49,6 +51,14 @@ func (c *controllerSim) polls() int {
 func (c *controllerSim) moveTo(x float64) {
 	c.mu.Lock()
 	c.x = x
+	c.mu.Unlock()
+}
+
+// silenceOverrides makes the controller stop appending Ov: to its reports,
+// which is what a real one does for nine reports out of ten.
+func (c *controllerSim) silenceOverrides() {
+	c.mu.Lock()
+	c.overrides = false
 	c.mu.Unlock()
 }
 
@@ -343,6 +353,56 @@ func TestWatchdogStopsAStationaryBeamWithTheClientStillConnected(t *testing.T) {
 	if beam {
 		t.Error("the laser is still on")
 	}
+}
+
+func TestTakingTheMachineOverEndsTheClientsConnection(t *testing.T) {
+	// Found on a real machine, and the reason this test exists at all: the
+	// watchdog stopped a laser while LightBurn was connected, and LightBurn -
+	// whose connection was never in question - carried on sending into a
+	// controller that had just been reset. A soft reset empties GRBL's planner
+	// and its receive buffer, so from that moment the two ends disagree about
+	// where the job is, and what the machine executes is not what was sent.
+	//
+	// The test above proves the beam goes out. It never asked what the client
+	// was told, which is how the hole survived.
+	sim, _, client := startWithSim(t, true, true, func(c *Config) {
+		c.OnDisconnect = DisconnectHold
+		c.IdlePoll = 100 * time.Millisecond
+		c.StationaryBeam = 400 * time.Millisecond
+		c.BeamGrace = time.Hour // not this rule; the client is still attached
+	})
+	defer client.Close()
+	sim.set("Idle", true)
+
+	// Everything the bridge says to the client, until it stops saying anything.
+	if err := client.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var heard strings.Builder
+	buffer := make([]byte, 512)
+	var readErr error
+	for {
+		n, err := client.Read(buffer)
+		heard.Write(buffer[:n])
+		if err != nil {
+			readErr = err
+			break
+		}
+	}
+	// The connection ending is what actually stops a sender; a message it can
+	// ignore is not enough on its own.
+	if errors.Is(readErr, os.ErrDeadlineExceeded) {
+		t.Fatalf("the client was left connected to a machine the bridge had taken over: %q", heard.String())
+	}
+	// And it is told why, in GRBL's own way of speaking to a sender - which
+	// LightBurn prints in its console, and which cannot be counted as an "ok".
+	if !strings.Contains(heard.String(), "[MSG:LaserBridgeOS took over") {
+		t.Errorf("the client was dropped without being told why: %q", heard.String())
+	}
+
+	// Exactly one reset. The disconnect the bridge caused itself must not start
+	// a second ladder into a controller that was just reset.
+	waitForCounts(t, sim, 0, 0, 1)
 }
 
 func TestAStandingMachineIsResetRatherThanCoaxed(t *testing.T) {

@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"net"
+	"strings"
 	"time"
 
 	"github.com/laserbridgeos/laserbridgeos/backend/internal/grbl"
@@ -14,7 +16,7 @@ import (
 // that is worse than it sounds: if the stream starves, the axes stop but the
 // beam is not necessarily switched off with them. What to do about that is
 // Decide's business; this decides only whether the question arises.
-func (b *Bridge) onClientGone() {
+func (b *Bridge) onClientGone(conn net.Conn) {
 	// Counted whatever the outcome, including "nothing to do": it is what lets
 	// a test wait for the decision to have been made rather than sleep and
 	// hope.
@@ -24,6 +26,19 @@ func (b *Bridge) onClientGone() {
 	// this - a service restart after a settings change, say - so the machine
 	// is not unattended and the job should not be interrupted.
 	if b.aborted() {
+		return
+	}
+	// A client the bridge dropped itself, in the middle of intervening, has
+	// already had the machine dealt with. Without this the disconnect it just
+	// caused would start a second ladder and send a soft reset to a controller
+	// that was reset a moment ago.
+	b.clientMu.Lock()
+	ours := conn != nil && b.droppedByUs == conn
+	if ours {
+		b.droppedByUs = nil
+	}
+	b.clientMu.Unlock()
+	if ours {
 		return
 	}
 	port := b.currentPort()
@@ -47,6 +62,7 @@ func (b *Bridge) onClientGone() {
 // walks every reachable state to prove no situation loops.
 func (b *Bridge) intervene(port *serial.Port, trigger Trigger, why string) {
 	tried := Tried{}
+	takenOver := false
 	for step := 0; step < 5; step++ {
 		if b.aborted() {
 			return
@@ -66,6 +82,19 @@ func (b *Bridge) intervene(port *serial.Port, trigger Trigger, why string) {
 		record := func() {
 			b.noteIntervention(decision.Reason + " (" + why + ")")
 			b.logf("%s (%s)", decision.Reason, why)
+		}
+
+		// The three steps below command the machine, and a client that is still
+		// streaming has to be let go before the first of them. See takeOver.
+		// Not for TriggerClientGone: there is no client to take it from, and a
+		// newcomer arriving mid-intervention is handed the machine rather than
+		// dropped - the loop below already returns for that case.
+		switch decision.Step {
+		case StepFeedHold, StepSpindleStop, StepSoftReset:
+			if !takenOver && trigger != TriggerClientGone {
+				b.takeOverFromClient(why)
+				takenOver = true
+			}
 		}
 
 		switch decision.Step {
@@ -125,6 +154,56 @@ func (b *Bridge) intervene(port *serial.Port, trigger Trigger, why string) {
 			return
 		}
 	}
+}
+
+// takeOverFromClient ends the connection of a client that is still streaming,
+// having first told it why.
+//
+// Silence here was a hole, and it was found on a real machine: the watchdog
+// stopped a laser, and LightBurn - whose connection was never in question -
+// carried on sending. That is worse than not intervening at all. A soft reset
+// empties GRBL's planner and its 128-byte receive buffer and, after motion,
+// leaves the controller in alarm; a sender that knows none of this keeps
+// counting "ok"s against a buffer that no longer holds what it thinks. What
+// follows is either a stream of error:9, or - if the controller came back idle
+// - G-code executed while the two ends disagree about where the job is. This
+// project's own words for that are "not a failed job, it is a wrong cut".
+//
+// ADR 0013 justified injecting real-time commands for the case where the client
+// had already gone. The stationary-beam watchdog then reused the mechanism for
+// the case where it has not, which is precisely the case the justification did
+// not cover.
+//
+// So the rule is: whoever takes the machine takes it completely. The [MSG:...]
+// is GRBL's own way of speaking to a sender and appears in LightBurn's console;
+// it cannot disturb the "ok" accounting because it is not an "ok". The
+// disconnect is what actually stops the streaming, and the message is what
+// explains it afterwards.
+func (b *Bridge) takeOverFromClient(why string) {
+	b.clientMu.Lock()
+	client := b.client
+	// Noted before the close, because closing is what wakes the goroutine that
+	// would otherwise start a second intervention.
+	b.droppedByUs = client
+	b.clientMu.Unlock()
+	if client == nil {
+		return
+	}
+	_ = client.SetWriteDeadline(time.Now().Add(b.config.ClientWriteTimeout))
+	_, _ = client.Write([]byte("[MSG:LaserBridgeOS took over: " + oneLine(why) + "]\r\n"))
+	b.logf("dropping client %s: %s", client.RemoteAddr(), why)
+	// Recorded as an intervention, not as a client event: routine connects and
+	// disconnects stay in memory, and this one has to survive the restart that
+	// so often follows it. It is also literally something the bridge did on its
+	// own accord, which is what that kind means.
+	b.note("intervention", "dropped "+client.RemoteAddr().String()+" because the bridge took the machine over: "+why)
+	_ = client.Close()
+}
+
+// oneLine keeps a reason inside a GRBL message. Square brackets end the
+// message and a line ending ends the line, so neither may travel inside one.
+func oneLine(text string) string {
+	return strings.NewReplacer("[", "(", "]", ")", "\r", " ", "\n", " ").Replace(text)
 }
 
 // pollBeam asks the controller about itself until it says something about its

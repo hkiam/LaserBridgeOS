@@ -156,9 +156,7 @@ async function loadMachine() {
     : '—');
   setText('#machine-feed', machine.state ? `${machine.feed || 0} mm/min · ${machine.spindle || 0}` : '—');
   setText('#machine-bytes', `${bytes(bridge.rx_bytes)} in · ${bytes(bridge.tx_bytes)} out`);
-  // Three states, and "not known" is one of them: a page that showed an
-  // unreported laser as off would be asserting the one thing nobody may guess.
-  setText('#machine-beam', {on: 'ON', off: 'off'}[machine.beam] || 'not reported');
+  setText('#machine-beam', beamText(machine));
 
   // Anything the bridge did on its own accord is worth saying plainly: an
   // operator who finds a paused machine should not have to guess why.
@@ -233,6 +231,32 @@ async function loadJournal() {
     }
     return row;
   }));
+}
+
+// What the controller said about its output, and when it said it.
+//
+// Three states, and "not known" is one of them: a page that showed an
+// unreported laser as off would be asserting the one thing nobody may guess.
+// The fourth case is subtler and was found on a real machine. GRBL mentions its
+// outputs only alongside Ov:, every tenth report or so, and it reports what the
+// output was at that instant - which in laser mode with M4 is genuinely off
+// during rapids and between moves. So "off" beside a machine that is cutting at
+// S450 is not a state, it is a stale sample, and printing it as "off" says more
+// than the controller did.
+//
+// The age is computed from the appliance's own two timestamps rather than from
+// this browser's clock, which may be years away from the appliance's if its RTC
+// battery is flat.
+function beamText(machine) {
+  const said = {on: 'ON', off: 'off'}[machine.beam];
+  if (!said) return 'not reported';
+  const age = machine.last_report_unix && machine.beam_unix
+    ? Math.max(0, machine.last_report_unix - machine.beam_unix)
+    : null;
+  if (machine.beam === 'off' && machine.state === 'Run' && (machine.spindle || 0) > 0) {
+    return `not conclusive — last said off ${age === null ? 'earlier' : `${age} s ago`}, cutting at S${machine.spindle}`;
+  }
+  return age ? `${said} (as of ${age} s ago)` : said;
 }
 
 function machineClass(machineState, bridgeState) {

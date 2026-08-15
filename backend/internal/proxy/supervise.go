@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	"github.com/laserbridgeos/laserbridgeos/backend/internal/grbl"
@@ -42,6 +43,7 @@ func (b *Bridge) watch(ctx context.Context) {
 	defer ticker.Stop()
 
 	silenceReported := false
+	staleReported := false
 	var beamOnSince, movedAt time.Time
 	var lastPosition grbl.Position
 
@@ -95,8 +97,31 @@ func (b *Bridge) watch(ctx context.Context) {
 			why = "the laser was on with nobody connected"
 		case b.config.StationaryBeam > 0 && machine.HasPosition &&
 			now.Sub(movedAt) > b.config.StationaryBeam && now.Sub(beamOnSince) > b.config.StationaryBeam:
+			// The evidence has a date on it, and by the time this fires the
+			// oldest of it is a whole grace period old. GRBL only mentions its
+			// outputs alongside Ov: - every tenth report or so - so "on for
+			// twenty seconds" can rest on a single observation from twenty
+			// seconds ago, and in laser mode with M4 that observation is taken
+			// at an instant when the output happened to be on.
+			//
+			// That was tolerable while an intervention only cost a feed hold.
+			// It is not now that the bridge drops the client with it: a false
+			// positive ends the job outright. So the controller has to have
+			// said something about its outputs within the window, otherwise
+			// this is acting on a memory.
+			if machine.BeamUnix == 0 || now.Sub(time.Unix(machine.BeamUnix, 0)) > b.config.StationaryBeam {
+				if !staleReported {
+					staleReported = true
+					b.note("fault", "the laser was reported on and the machine has not moved, "+
+						"but the controller has said nothing about its outputs since; not acting on that")
+				}
+				continue
+			}
+			staleReported = false
 			trigger = TriggerBeamStationary
-			why = "the laser was on and the machine had not moved for " + b.config.StationaryBeam.String()
+			why = "the laser was on and the machine had not moved for " + b.config.StationaryBeam.String() +
+				" (last reported on " + now.Sub(time.Unix(machine.BeamUnix, 0)).Round(time.Second).String() + " ago, S" +
+				strconv.FormatFloat(machine.Spindle, 'f', -1, 64) + ")"
 		default:
 			continue
 		}

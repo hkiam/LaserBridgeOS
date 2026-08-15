@@ -96,7 +96,20 @@ type Machine struct {
 	// Beam is whether the laser output is on, taken from the accessory field
 	// of a status report - which GRBL fills from the actual output rather than
 	// from the modal state, so it is evidence and not inference.
+	//
+	// It is evidence with a date on it, and the date matters. GRBL sends the
+	// accessory field only alongside Ov:, which is every tenth report or so
+	// plus whenever either changes, and it fills it from the output as it is at
+	// that instant. In laser mode with M4 the output is genuinely off during
+	// rapids and at zero-power moments, so a report can truthfully say "nothing
+	// on" a fraction of a second before the beam is burning again. Reading this
+	// as a state - "the laser is off" - while a job is running says more than
+	// the controller did, which is how a cutting machine came to be shown as
+	// off.
 	Beam Beam `json:"beam"`
+	// BeamUnix is when the controller last said anything about its outputs. A
+	// reading without it is a claim without a date.
+	BeamUnix int64 `json:"beam_unix,omitempty"`
 	// LaserMode is GRBL setting $32, seen in a settings dump. It decides
 	// whether a feed hold switches the beam off: with laser mode off, the
 	// output is a spindle, and a feed hold deliberately leaves a spindle
@@ -203,6 +216,7 @@ func (o *Observer) apply(report Report) {
 			} else {
 				o.machine.Beam = BeamOff
 			}
+			o.machine.BeamUnix = o.lastReport.Unix()
 		}
 	case "setting":
 		if report.Setting == LaserMode {
@@ -230,7 +244,10 @@ func (o *Observer) apply(report Report) {
 			LastReportUnix: o.machine.LastReportUnix,
 			State:          StateUnknown,
 			Beam:           BeamOff,
-			LaserMode:      o.machine.LaserMode,
+			// A banner is the controller saying its outputs are off, now - so
+			// this reading is as fresh as the banner is.
+			BeamUnix:  o.lastReport.Unix(),
+			LaserMode: o.machine.LaserMode,
 		}
 	}
 }
@@ -287,6 +304,7 @@ func (o *Observer) ForgetBeam() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.machine.Beam = BeamUnknown
+	o.machine.BeamUnix = 0
 }
 
 // Reset forgets everything, for when the port is reopened and the reading
