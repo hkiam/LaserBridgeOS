@@ -176,6 +176,18 @@ scheduling userspace at all — the one failure no software layer can act on.
 `kernel.panic_on_oops` and `kernel.panic` get most lockups as far as a reboot
 before the watchdog has to.
 
+**The invariant across all of them**: after any recovery, either the beam is
+off, or a client is in charge of it, or the appliance is watching it again
+within the grace period. It has to be stated because the paths end in different
+places — only a reboot power-cycles USB, and only that re-enumeration toggles
+DTR and resets an Arduino-based controller. A bridge restart deliberately does
+not (HUPCL is cleared so that restarting the service during a job costs
+nothing, ADR 0009), so a restarted bridge can find itself holding a port to a
+machine whose laser is on, having reset nothing. `TestABridgeThatStartsOnALiveBeamStopsIt`
+and `TestABridgeDefersToAClientThatIsInCharge` are the first two branches of
+that sentence; the third, the physical one, is in the hardware smoke test
+because it cannot be established anywhere else.
+
 Logs go to `/data/log/messages`, rotated by BusyBox syslogd at 200 KiB with two
 generations kept, with `klogd` feeding the kernel's own messages into the same
 file. `/api/logs` reads that file and falls back to `logread` where it does not
