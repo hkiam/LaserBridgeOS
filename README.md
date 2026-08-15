@@ -239,6 +239,20 @@ configuration names it, so exactly one ever owns the serial port. Switching is
 a configuration change; changing it on the System page stops one and starts
 the other.
 
+**ser2net stays.** Not as a transitional measure while the new bridge proves
+itself, but permanently: it is the fallback for the day laserbridged does
+something unexpected in the middle of a job. It is a well-worn program that
+does one thing, and a bridge that understands GRBL has more ways to be wrong
+than one that does not. Whatever laserbridged learns to do, `backend:
+ser2net` remains one line and one restart away — including over SSH, when the
+web interface is the thing that is not working:
+
+```console
+$ ssh laserbridge@laserbridge.local
+$ doas sed -i 's/backend: laserbridged/backend: ser2net/' /data/config.yaml
+$ doas rc-service laserbridged stop && doas rc-service ser2net start
+```
+
 ### What the machine is doing
 
 `laserbridged` reads along with the controller's replies and keeps the
@@ -318,9 +332,10 @@ left writing G-code into a void, and the port is reopened when the adapter
 comes back — no restart needed.
 
 The decisions behind all of this are in ADR 0009 (why our own bridge) and
-ADR 0010 (what it may do on its own). A hardware interlock — a relay in the
-laser-enable line — would remove the "it depends on this daemon" caveat
-entirely, and is not designed here because the appliance has no such hardware.
+ADR 0010 (what it may do on its own). There will be no hardware interlock: a
+relay in the laser-enable line is the only thing that would remove the "it
+depends on this daemon" caveat, and this appliance will not get one. The
+caveat is permanent.
 
 `tests/hardware/grbl-smoke-test.sh <host>` checks the whole path against a
 real controller; everything else is covered by tests against a

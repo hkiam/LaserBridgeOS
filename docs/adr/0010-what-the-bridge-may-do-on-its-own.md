@@ -71,6 +71,9 @@ written before this setting existed loads with `hold`, not with the previous
 `none`. That is a deliberate choice to make the safer behaviour the one nobody
 has to know about; anyone who wants the old behaviour sets `none`.
 
-Hardware interlocks - a relay that cuts laser enable, an external door switch
-- would remove the "it depends on this daemon" caveat. That needs hardware the
-appliance does not have, so it is not designed here rather than sketched.
+No hardware interlock is planned. A relay in the laser-enable line would
+remove the "it depends on this daemon" caveat, and it is the only thing that
+would; it is also hardware this appliance will not get. Saying so plainly
+matters more than leaving it on a list: the caveat above is permanent, not
+provisional, and nothing in this project should be written as though a future
+version will make the software stop trustworthy.

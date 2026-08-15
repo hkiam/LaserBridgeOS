@@ -46,8 +46,11 @@ turned away.
 `grbl.backend` is `ser2net` or `laserbridged`; both services sit in the
 default runlevel and each refuses to start unless the configuration names it.
 Exactly one owns the serial port, and switching is a configuration change
-rather than an image change. The default stays `ser2net` until the new one has
-earned the job.
+rather than an image change.
+
+`ser2net` is the default, and it is not going away once laserbridged has
+earned the job - see ADR 0011. Shipping both permanently costs a few megabytes
+and buys a fallback that does not depend on any of our own code being right.
 
 **Status over a Unix socket** at `/run/laserbridge/laserbridged.sock`, one
 line in and one JSON object out. The web backend asks there instead of
@@ -57,9 +60,8 @@ stage will add.
 
 ## Consequences
 
-The appliance carries two GRBL backends for a while, which is the point: the
-old one remains one configuration change away for as long as that is worth
-having.
+The appliance carries two GRBL backends permanently, which is the point: the
+old one remains one configuration change away, indefinitely.
 
 Byte transparency is verified against a pseudo-terminal, which is a real tty
 with the same termios semantics as a serial adapter — the tests exercise the

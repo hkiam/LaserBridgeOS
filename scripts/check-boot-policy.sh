@@ -35,6 +35,19 @@ grep -q 'wait_for_association' rootfs/etc/init.d/laserbridge-network ||
 grep -q 'start_access_point' rootfs/etc/init.d/laserbridge-network ||
 	fail "Wi-Fi client mode has no setup-AP recovery path"
 
+# ser2net is the permanent fallback for the day laserbridged does something
+# unexpected mid-job (ADR 0011). "We keep the fallback" does not survive a year
+# of refactoring unless something fails when it stops being true.
+grep -q 'ser2net' build/prepare-rootfs.sh ||
+	fail "ser2net is no longer installed; it is the permanent GRBL fallback (ADR 0011)"
+for backend in ser2net laserbridged; do
+	grep -q "add_service default.*$backend\|for service in .*$backend" build/prepare-rootfs.sh ||
+		fail "$backend is not in the default runlevel; both GRBL backends must be present"
+	[ -f "rootfs/etc/init.d/$backend" ] || fail "rootfs/etc/init.d/$backend is missing"
+	grep -q "grbl-backend $backend" "rootfs/etc/init.d/$backend" ||
+		fail "$backend does not check whether the configuration selects it"
+done
+
 # The size of a root slot is written down twice, in two languages: the
 # partition table in the build script, and the limit the updater enforces
 # before it writes a slot. If they drift apart an update either overflows its
