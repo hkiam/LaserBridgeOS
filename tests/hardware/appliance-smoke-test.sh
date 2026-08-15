@@ -161,6 +161,25 @@ else
 	ok "the stored configuration was fully understood"
 fi
 
+say "The controller the bridge is talking to"
+# Since the bridge asks $I and $$ in the window before the first client is
+# served, the record should name the firmware and the one setting the whole
+# escalation turns on. If $32 is off on this machine, a feed hold does not stop
+# the output and on_disconnect must stay on reset.
+if identity=$(on grep -h "controller:" /data/laserbridge/bridge-journal.log 2>/dev/null | tail -1) &&
+	[ -n "$identity" ]; then
+	ok "the controller identified itself"
+	note "$identity"
+	case "$identity" in
+		*"laser mode (\$32) is OFF"*)
+			note "WARNING: a feed hold will not switch this output off; keep on_disconnect=reset" ;;
+		*"laser mode (\$32) unknown"*)
+			note "the settings dump did not arrive; the ladder runs without knowing \$32" ;;
+	esac
+else
+	bad "the record does not name the controller: the opening questions never got an answer"
+fi
+
 say "A stale save is refused"
 # Two tabs, or a tab and somebody at the SSH prompt. Only the rejected write is
 # attempted here, so nothing is changed either way.
@@ -194,7 +213,14 @@ Still worth doing by hand, and not by any script:
      configuration being readable by both slots (ADR 0016), and it is the one
      path that involves two real system slots.
 
-  2. Pull the power mid-job. Nothing here should be corrupted: /data is ext4
+  2. Reboot with the laser deliberately left on - M3 S50 from a console, lid
+     open, scrap underneath. Coming back up must find the output off: the
+     re-enumeration of USB toggles DTR and resets an Arduino-based controller,
+     and if it does not, the bridge's own watchdog has one second with nobody
+     connected to reach the same end. This is the third branch of the recovery
+     invariant and the only one no test can establish.
+
+  3. Pull the power mid-job. Nothing here should be corrupted: /data is ext4
      with errors=remount-ro and everything of consequence is written through
      atomicfile. Check /data/log/messages afterwards - it should still be
      there, and it should say what happened before the lights went out.
