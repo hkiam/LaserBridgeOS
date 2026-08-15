@@ -1,0 +1,86 @@
+# A transcript in the format the monitor port emits: "> " towards the
+# controller, "< " from it, "* " the bridge's own commands. Lines beginning
+# with # are notes and are not replayed.
+#
+# THIS ONE IS SYNTHESISED, not captured. It encodes the GRBL 1.1 interface
+# documentation: the Ov: block - and the A: field with it - is printed every
+# tenth status report when idle, every twentieth while moving, and immediately
+# whenever an override or accessory state changes. A: is appended only when
+# something is actually on.
+#
+# To replace it with a real one, set grbl.monitor_port on the appliance and
+# capture a cut:
+#
+#     nc laserbridge.local 2323 > backend/internal/grbl/testdata/your-machine.transcript
+#
+# A captured file is worth more than this one: it is what a controller did,
+# rather than what we believe controllers do.
+> $I
+< [VER:1.1h.20190825:]
+< [OPT:V,15,128]
+< ok
+> ?
+< <Idle|MPos:0.000,0.000,0.000|FS:0,0|Ov:100,100,100>
+> G0X10Y10
+< ok
+# A rapid. The laser is off during it, so no A: even in the report that
+# carries Ov: - and that absence is the only reason absence can be read.
+> ?
+< <Run|MPos:2.100,2.100,0.000|FS:3000,0>
+> ?
+< <Run|MPos:5.400,5.400,0.000|FS:3000,0>
+> ?
+< <Run|MPos:9.800,9.800,0.000|FS:3000,0>
+> M4S450
+< ok
+> G1X60F800
+< ok
+# The cut. The output comes on, which is a change, so the block is forced out
+# at once rather than waiting for the counter.
+> ?
+< <Run|MPos:12.400,10.000,0.000|FS:800,450|Ov:100,100,100|A:S>
+> ?
+< <Run|MPos:14.900,10.000,0.000|FS:800,450>
+> ?
+< <Run|MPos:17.300,10.000,0.000|FS:800,450>
+> ?
+< <Run|MPos:19.800,10.000,0.000|FS:800,450>
+> ?
+< <Run|MPos:22.200,10.000,0.000|FS:800,450>
+> ?
+< <Run|MPos:24.700,10.000,0.000|FS:800,450>
+> ?
+< <Run|MPos:27.100,10.000,0.000|FS:800,450>
+> ?
+< <Run|MPos:29.600,10.000,0.000|FS:800,450>
+> ?
+< <Run|MPos:32.000,10.000,0.000|FS:800,450>
+> ?
+< <Run|MPos:34.500,10.000,0.000|FS:800,450>
+> ?
+< <Run|MPos:36.900,10.000,0.000|FS:800,450>
+> ?
+< <Run|MPos:39.400,10.000,0.000|FS:800,450>
+> ?
+< <Run|MPos:41.800,10.000,0.000|FS:800,450>
+> ?
+< <Run|MPos:44.300,10.000,0.000|FS:800,450>
+> ?
+< <Run|MPos:46.700,10.000,0.000|FS:800,450>
+> ?
+< <Run|MPos:49.200,10.000,0.000|FS:800,450>
+> ?
+< <Run|MPos:51.600,10.000,0.000|FS:800,450>
+> ?
+< <Run|MPos:54.100,10.000,0.000|FS:800,450>
+> ?
+< <Run|MPos:56.500,10.000,0.000|FS:800,450>
+# Twenty reports later, the counter runs out and the block comes round again.
+> ?
+< <Run|MPos:59.000,10.000,0.000|FS:800,450|Ov:100,100,100|A:S>
+> M5
+< ok
+# The output goes off. A change, so the block is forced out again - this time
+# without A:, which is the controller saying nothing is on.
+> ?
+< <Idle|MPos:60.000,10.000,0.000|FS:0,0|Ov:100,100,100>

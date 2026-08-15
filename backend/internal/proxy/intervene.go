@@ -219,16 +219,29 @@ func oneLine(text string) string {
 	return strings.NewReplacer("[", "(", "]", ")", "\r", " ", "\n", " ").Replace(text)
 }
 
+// beamPollInterval is how fast the bridge asks while it is waiting for the
+// controller to mention its outputs. Only ever during an intervention, when the
+// client has been let go, so it competes with nobody.
+const beamPollInterval = 100 * time.Millisecond
+
 // pollBeam asks the controller about itself until it says something about its
 // outputs, or until asking stops being worthwhile.
+//
+// How long that takes is set by the controller, not by us: GRBL mentions its
+// outputs in the Ov: block, which it prints every tenth status report when idle
+// and every twentieth while moving, plus immediately whenever the accessory
+// state changes. The last part is what usually makes this quick - a feed hold
+// that switched the beam off is a change, and the change forces the block out
+// at once. It is the case where nothing changed, which is the case worth
+// knowing about, that has to wait for the counter.
 func (b *Bridge) pollBeam(port *serial.Port) grbl.Beam {
 	// Deliberately starting from no answer rather than from whatever was last
 	// seen: the question is what the controller says now.
 	b.observer.ForgetBeam()
 
-	deadline := time.NewTimer(b.config.HoldSettle)
+	deadline := time.NewTimer(b.config.BeamConfirm)
 	defer deadline.Stop()
-	ticker := time.NewTicker(150 * time.Millisecond)
+	ticker := time.NewTicker(beamPollInterval)
 	defer ticker.Stop()
 	for {
 		if err := b.writeOwn(port, statusReq); err != nil {

@@ -110,6 +110,14 @@ type Machine struct {
 	// BeamUnix is when the controller last said anything about its outputs. A
 	// reading without it is a claim without a date.
 	BeamUnix int64 `json:"beam_unix,omitempty"`
+	// Reports counts status reports seen; BeamReports is what that count was
+	// when the outputs were last mentioned. The difference is how stale the
+	// reading is measured in the controller's own terms, which is the only
+	// measure that means anything: GRBL prints the Ov: block every tenth
+	// report when idle and every twentieth while moving, so "two seconds old"
+	// says nothing without knowing how much was said in those two seconds.
+	Reports     int64 `json:"reports,omitempty"`
+	BeamReports int64 `json:"beam_reports,omitempty"`
 	// LaserMode is GRBL setting $32, seen in a settings dump. It decides
 	// whether a feed hold switches the beam off: with laser mode off, the
 	// output is a spindle, and a feed hold deliberately leaves a spindle
@@ -210,6 +218,7 @@ func (o *Observer) apply(report Report) {
 		// Ov: whenever anything is on, so Ov: without it means everything is
 		// off. A report without Ov: leaves the previous reading standing
 		// rather than being read as "off".
+		o.machine.Reports++
 		if report.HasOverrides {
 			if strings.ContainsAny(report.Accessory, "SC") {
 				o.machine.Beam = BeamOn
@@ -217,6 +226,7 @@ func (o *Observer) apply(report Report) {
 				o.machine.Beam = BeamOff
 			}
 			o.machine.BeamUnix = o.lastReport.Unix()
+			o.machine.BeamReports = o.machine.Reports
 		}
 	case "setting":
 		if report.Setting == LaserMode {
@@ -246,8 +256,10 @@ func (o *Observer) apply(report Report) {
 			Beam:           BeamOff,
 			// A banner is the controller saying its outputs are off, now - so
 			// this reading is as fresh as the banner is.
-			BeamUnix:  o.lastReport.Unix(),
-			LaserMode: o.machine.LaserMode,
+			BeamUnix:    o.lastReport.Unix(),
+			Reports:     o.machine.Reports,
+			BeamReports: o.machine.Reports,
+			LaserMode:   o.machine.LaserMode,
 		}
 	}
 }
@@ -305,6 +317,7 @@ func (o *Observer) ForgetBeam() {
 	defer o.mu.Unlock()
 	o.machine.Beam = BeamUnknown
 	o.machine.BeamUnix = 0
+	o.machine.BeamReports = 0
 }
 
 // Reset forgets everything, for when the port is reopened and the reading

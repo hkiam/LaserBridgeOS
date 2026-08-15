@@ -34,6 +34,12 @@ import (
 // asking. That is the one thing it injects into a client's stream, it is
 // read-only, and without it the watchdog would be reading a number that
 // stopped updating exactly when it started mattering.
+// beamEvidenceReports is how many status reports may pass after the controller
+// last mentioned its outputs before the bridge stops treating that as current.
+// GRBL's widest documented gap is twenty; thirty leaves room for a fork that
+// counts differently without letting a genuinely stale reading through.
+const beamEvidenceReports = 30
+
 func (b *Bridge) watch(ctx context.Context) {
 	tick := b.config.IdlePoll / 2
 	if tick < 100*time.Millisecond {
@@ -107,9 +113,17 @@ func (b *Bridge) watch(ctx context.Context) {
 			// That was tolerable while an intervention only cost a feed hold.
 			// It is not now that the bridge drops the client with it: a false
 			// positive ends the job outright. So the controller has to have
-			// said something about its outputs within the window, otherwise
-			// this is acting on a memory.
-			if machine.BeamUnix == 0 || now.Sub(time.Unix(machine.BeamUnix, 0)) > b.config.StationaryBeam {
+			// mentioned its outputs recently, otherwise this is acting on a
+			// memory.
+			//
+			// "Recently" is counted in reports and not in seconds, and that
+			// distinction was itself a bug for an afternoon. Tying it to the
+			// grace period looks reasonable and is unsatisfiable: with a grace
+			// of two seconds - which the configuration allows - and a block
+			// every tenth report, no evidence is ever young enough and the
+			// check switches itself off in silence. Reports are the unit the
+			// controller actually meters this in.
+			if machine.BeamUnix == 0 || machine.Reports-machine.BeamReports > beamEvidenceReports {
 				if !staleReported {
 					staleReported = true
 					b.note("fault", "the laser was reported on and the machine has not moved, "+
