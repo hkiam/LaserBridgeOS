@@ -57,12 +57,12 @@ func TestParseIWScanDeduplicatesAndSorts(t *testing.T) {
 }
 
 func TestWiFiScanUsesDiscoveredInterfaceWithoutShell(t *testing.T) {
-	sysfs := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(sysfs, "wlan-test", "wireless"), 0755); err != nil {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "sys", "class", "net", "wlan-test", "wireless"), 0755); err != nil {
 		t.Fatal(err)
 	}
 	runner := &scanRunner{out: []byte(sampleIWScan)}
-	handler := (&Server{Runner: runner, WirelessSysfs: sysfs}).Handler()
+	handler := (&Server{Runner: runner, Root: root}).Handler()
 	request := httptest.NewRequest(http.MethodGet, "/api/wifi/scan", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)

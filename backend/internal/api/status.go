@@ -24,6 +24,11 @@ type statusResponse struct {
 	Clients     map[string]int     `json:"clients"`
 	Version     string             `json:"version"`
 	Config      statusConfigFields `json:"config"`
+	// ConfigWarnings is what the stored configuration contained that this
+	// version did not understand, and what was done about it. Usually empty;
+	// after a rollback to an older slot it is the difference between "the
+	// appliance forgot my settings" and "this version is older than the file".
+	ConfigWarnings []string `json:"config_warnings,omitempty"`
 }
 
 type memoryStatus struct {
@@ -45,6 +50,14 @@ type statusConfigFields struct {
 	CameraDevice    string `json:"camera_device"`
 	CameraStreamURL string `json:"camera_stream_url"`
 	CameraMode      string `json:"camera_mode"`
+	// USBAutosuspend is what the configuration asks of the kernel;
+	// USBAutosuspendActive is what the kernel answers when asked back, and is
+	// null when it could not be read. The two are shown side by side because
+	// they can differ - a backend without root cannot write sysfs - and a page
+	// that only showed the saved value would be reporting an intention as a
+	// fact.
+	USBAutosuspend       int  `json:"usb_autosuspend"`
+	USBAutosuspendActive *int `json:"usb_autosuspend_active"`
 }
 
 func (s *Server) status(w http.ResponseWriter, _ *http.Request) {
@@ -57,8 +70,13 @@ func (s *Server) status(w http.ResponseWriter, _ *http.Request) {
 	if hostname == "" {
 		hostname = cfg.System.Hostname
 	}
+	sys := s.system()
 	services := map[string]bool{}
-	for _, name := range []string{"ser2net", "laserbridged", "ustreamer", "sshd", "avahi-daemon", "laserbridge-web"} {
+	// The watchdog is listed with the rest because it is the one service whose
+	// absence is invisible by design: a board without /dev/watchdog refuses to
+	// start it, and an appliance with no last resort must not look like one
+	// that has it (ADR 0017).
+	for _, name := range []string{"ser2net", "laserbridged", "ustreamer", "sshd", "avahi-daemon", "laserbridge-web", "laserbridge-watchdog"} {
 		services[name] = s.serviceRunning(name)
 	}
 	// supervise-daemon reports "started" for as long as the supervisor lives,
@@ -68,32 +86,40 @@ func (s *Server) status(w http.ResponseWriter, _ *http.Request) {
 	// the port.
 	// Whichever backend owns the GRBL port has to be listening on it to
 	// count as running, and the one that is not selected is simply off.
-	services["ser2net"] = services["ser2net"] && listening(cfg.GRBL.Port)
+	services["ser2net"] = services["ser2net"] && sys.listening(cfg.GRBL.Port)
 	// And whichever one is laserbridged has to still be answering. A wedged
 	// daemon keeps its listening socket - the kernel accepts on its behalf -
 	// so the port alone proves nothing, and reporting a bridge that has
 	// stopped supervising the machine as "running" is the wrong answer.
-	services["laserbridged"] = services["laserbridged"] && listening(cfg.GRBL.Port) &&
+	services["laserbridged"] = services["laserbridged"] && sys.listening(cfg.GRBL.Port) &&
 		// Only asked when it is the backend in charge: with ser2net selected
 		// there is nothing at the other end of that socket, and dialling it on
 		// every status poll is work for no answer.
 		(cfg.GRBL.Backend != config.BackendLaserbridged ||
 			s.BridgeWatch == nil || s.BridgeWatch.Responsive())
-	services["ustreamer"] = services["ustreamer"] && listening(cfg.Camera.Port)
+	services["ustreamer"] = services["ustreamer"] && sys.listening(cfg.Camera.Port)
 	version := readTrimmed(s.VersionPath)
 	if version == "" {
 		version = "development"
 	}
+	var usbActive *int
+	if s.Runtime != nil {
+		if value, ok := s.Runtime.USBAutosuspend(); ok {
+			usbActive = &value
+		}
+	}
 	writeJSON(w, http.StatusOK, statusResponse{
-		Hostname: hostname, IPAddresses: uniqueAddresses(), Uptime: uptime(), CPUPercent: cpuPercent(),
-		Memory: memory(), Storage: storage("/data"), Services: services,
-		Devices: map[string]bool{"grbl": pathExists(cfg.GRBL.Device), "camera": pathExists(cfg.Camera.Device)},
-		Clients: map[string]int{"grbl": tcpClients(cfg.GRBL.Port)}, Version: version,
+		Hostname: hostname, IPAddresses: uniqueAddresses(), Uptime: sys.uptime(), CPUPercent: sys.cpuPercent(),
+		Memory: sys.memory(), Storage: storage(s.dataPath()), Services: services,
+		Devices: map[string]bool{"grbl": sys.exists(cfg.GRBL.Device), "camera": sys.exists(cfg.Camera.Device)},
+		Clients: map[string]int{"grbl": sys.tcpClients(cfg.GRBL.Port)}, Version: version,
+		ConfigWarnings: s.Store.Notes(),
 		Config: statusConfigFields{
 			GRBLBackend: cfg.GRBL.Backend,
 			GRBLDevice:  cfg.GRBL.Device, GRBLPort: cfg.GRBL.Port, CameraDevice: cfg.Camera.Device,
 			CameraStreamURL: "http://" + cfg.System.Hostname + ".local:" + strconv.Itoa(cfg.Camera.Port) + "/stream",
 			CameraMode:      cfg.Camera.Resolution + " @ " + strconv.Itoa(cfg.Camera.FPS) + " FPS",
+			USBAutosuspend:  cfg.System.USBAutosuspend, USBAutosuspendActive: usbActive,
 		},
 	})
 }
@@ -106,8 +132,8 @@ func (s *Server) serviceRunning(name string) bool {
 	return err == nil
 }
 
-func uptime() uint64 {
-	fields := strings.Fields(readTrimmed("/proc/uptime"))
+func (r system) uptime() uint64 {
+	fields := strings.Fields(readTrimmed(r.path("/proc/uptime")))
 	if len(fields) == 0 {
 		return 0
 	}
@@ -115,8 +141,8 @@ func uptime() uint64 {
 	return uint64(seconds)
 }
 
-func cpuSnapshot() (idle, total uint64) {
-	file, err := os.Open("/proc/stat")
+func (r system) cpuSnapshot() (idle, total uint64) {
+	file, err := os.Open(r.path("/proc/stat"))
 	if err != nil {
 		return 0, 0
 	}
@@ -136,10 +162,10 @@ func cpuSnapshot() (idle, total uint64) {
 	return idle, total
 }
 
-func cpuPercent() float64 {
-	idleA, totalA := cpuSnapshot()
+func (r system) cpuPercent() float64 {
+	idleA, totalA := r.cpuSnapshot()
 	time.Sleep(50 * time.Millisecond)
-	idleB, totalB := cpuSnapshot()
+	idleB, totalB := r.cpuSnapshot()
 	if totalB <= totalA {
 		return 0
 	}
@@ -147,9 +173,9 @@ func cpuPercent() float64 {
 	return float64(int(value*10+0.5)) / 10
 }
 
-func memory() memoryStatus {
+func (r system) memory() memoryStatus {
 	values := map[string]uint64{}
-	file, err := os.Open("/proc/meminfo")
+	file, err := os.Open(r.path("/proc/meminfo"))
 	if err != nil {
 		return memoryStatus{}
 	}
@@ -175,21 +201,21 @@ func storage(path string) storageStatus {
 }
 
 // listening reports whether anything holds a listening socket on the port.
-func listening(port int) bool {
-	return countTCP(port, "0A") > 0
+func (r system) listening(port int) bool {
+	return r.countTCP(port, "0A") > 0
 }
 
-func tcpClients(port int) int {
-	return countTCP(port, "01")
+func (r system) tcpClients(port int) int {
+	return r.countTCP(port, "01")
 }
 
 // countTCP counts sockets on a local port in the given state, as /proc spells
 // it: 0A is LISTEN, 01 is ESTABLISHED.
-func countTCP(port int, state string) int {
+func (r system) countTCP(port int, state string) int {
 	needle := strings.ToUpper(strconv.FormatInt(int64(port), 16))
 	needle = strings.Repeat("0", 4-len(needle)) + needle
 	count := 0
-	for _, path := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+	for _, path := range []string{r.path("/proc/net/tcp"), r.path("/proc/net/tcp6")} {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			continue

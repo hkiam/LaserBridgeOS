@@ -57,9 +57,12 @@ func passwordServer(t *testing.T, currentHash string) (http.Handler, *lbruntime.
 	if err := os.WriteFile(filepath.Join(dataDir, "shadow"), []byte(shadow), 0640); err != nil {
 		t.Fatal(err)
 	}
-	manager := &lbruntime.Manager{Store: store, Dir: filepath.Join(dir, "run"), DataDir: dataDir, Run: cryptRunner{}}
+	// One root for the whole server: nothing here may read - or write - the
+	// machine running the test.
+	root := filepath.Join(dir, "root")
+	manager := &lbruntime.Manager{Store: store, Dir: filepath.Join(dir, "run"), DataDir: dataDir, Run: cryptRunner{}, Root: root}
 	updater := &lbupdate.Manager{DataDir: dataDir, RuntimeDir: filepath.Join(dir, "run"), VersionPath: filepath.Join(dir, "version")}
-	server := &Server{Store: store, Runtime: manager, Runner: cryptRunner{}, Updater: updater}
+	server := &Server{Store: store, Runtime: manager, Runner: cryptRunner{}, Updater: updater, Root: root}
 	return server.Handler(), manager
 }
 

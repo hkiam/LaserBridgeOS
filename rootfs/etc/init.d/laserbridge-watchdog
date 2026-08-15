@@ -1,0 +1,31 @@
+#!/sbin/openrc-run
+# shellcheck shell=sh
+# shellcheck disable=SC2034
+
+description="Reset the appliance if the kernel stops scheduling userspace"
+command="/usr/sbin/laserbridge"
+command_args="watchdog"
+command_user="root:root"
+supervisor="supervise-daemon"
+# start_pre runs when the service is started, not on every respawn. If the
+# device goes away later - a module unloaded by hand - the process exits and
+# the supervisor tries again; five seconds keeps that from becoming a log line
+# per second while still being far inside any watchdog timeout.
+respawn_delay=5
+respawn_max=0
+output_logger="logger -t laserbridge-watchdog"
+error_logger="logger -t laserbridge-watchdog"
+
+depend() {
+	# Nothing needs this and it needs nothing: the point of a last resort is
+	# that it is up early, stays up, and shares no fate with what it protects.
+	after devfs
+}
+
+start_pre() {
+	if [ ! -e /dev/watchdog ]; then
+		eerror "No /dev/watchdog on this machine: a frozen kernel will not be recovered."
+		eerror "Boards without a watchdog run without a last resort - see ADR 0017."
+		return 1
+	fi
+}

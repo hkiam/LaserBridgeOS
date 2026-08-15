@@ -1,1 +1,2 @@
 /etc/laserbridge/ramboot-init
+/etc/modprobe.d/laserbridge-usb.conf

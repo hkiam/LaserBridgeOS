@@ -21,8 +21,11 @@ func grblServer(t *testing.T, socket string) (http.Handler, *config.Store) {
 	if _, err := store.Ensure(); err != nil {
 		t.Fatal(err)
 	}
-	manager := &lbruntime.Manager{Store: store, Dir: filepath.Join(dir, "run"), DataDir: filepath.Join(dir, "data")}
-	handler := (&Server{Store: store, Runtime: manager, BridgeSocket: socket}).Handler()
+	// One root for the whole server: nothing here may read - or write - the
+	// machine running the test.
+	root := filepath.Join(dir, "root")
+	manager := &lbruntime.Manager{Store: store, Dir: filepath.Join(dir, "run"), DataDir: filepath.Join(dir, "data"), Root: root}
+	handler := (&Server{Store: store, Runtime: manager, BridgeSocket: socket, Root: root}).Handler()
 	return handler, store
 }
 

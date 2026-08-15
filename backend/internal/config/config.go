@@ -23,7 +23,26 @@ type Config struct {
 type System struct {
 	Hostname      string `json:"hostname"`
 	SetupComplete bool   `json:"setup_complete"`
+	// USBAutosuspend is how many seconds a USB device may sit idle before the
+	// kernel is allowed to suspend it. USBAutosuspendOff switches that off
+	// entirely, which is the default: a serial adapter that autosuspends
+	// between two G-code lines wakes up late, drops characters, or comes back
+	// as a different device node - and the milliwatts it saves on an appliance
+	// that is bolted to a laser and plugged into the wall buy nothing. It is a
+	// setting rather than a constant because a device whose driver needs
+	// remote wakeup to stay alive exists, and because power measurement is a
+	// legitimate reason to turn it back on.
+	USBAutosuspend int `json:"usb_autosuspend"`
 }
+
+// USBAutosuspendOff is the kernel's own sentinel for "never autosuspend",
+// spelled the way usbcore spells it. Zero is not that value - it tells the
+// kernel to suspend as soon as the device goes idle, which is the opposite.
+const USBAutosuspendOff = -1
+
+// MaxUSBAutosuspend bounds the delay at an hour. Anything longer is
+// indistinguishable from off, and off has its own value.
+const MaxUSBAutosuspend = 3600
 
 type GRBL struct {
 	// Backend selects which service owns the serial port: the long-standing
@@ -88,7 +107,7 @@ type WiFi struct {
 
 func Default() Config {
 	return Config{
-		System: System{Hostname: "laserbridge", SetupComplete: false},
+		System: System{Hostname: "laserbridge", SetupComplete: false, USBAutosuspend: USBAutosuspendOff},
 		GRBL: GRBL{
 			Backend: BackendSer2net,
 			Device:  "/dev/ttyUSB0", Baudrate: 115200, Port: 23,
@@ -139,6 +158,9 @@ func (c Config) Validate() error {
 	var problems []string
 	if !hostnameRE.MatchString(c.System.Hostname) {
 		problems = append(problems, "system.hostname must be a single RFC 1123 label")
+	}
+	if c.System.USBAutosuspend < USBAutosuspendOff || c.System.USBAutosuspend > MaxUSBAutosuspend {
+		problems = append(problems, fmt.Sprintf("system.usb_autosuspend must be %d to switch it off, or 0 to %d seconds", USBAutosuspendOff, MaxUSBAutosuspend))
 	}
 	if c.GRBL.Backend != BackendSer2net && c.GRBL.Backend != BackendLaserbridged {
 		problems = append(problems, "grbl.backend must be ser2net or laserbridged")
@@ -243,6 +265,55 @@ func (c Config) Validate() error {
 		return errors.New(strings.Join(problems, "; "))
 	}
 	return nil
+}
+
+// Salvage builds a usable configuration out of one that is not, keeping the
+// settings without which nobody could reach the appliance to repair the rest.
+//
+// Replacing an unusable configuration with Default() outright - which is what
+// this used to do - resets system.setup_complete, and that puts the appliance
+// back into first-boot access-point mode; it also forgets the Wi-Fi network,
+// which takes it off the workshop network altogether. The operator is then
+// standing in front of a headless box that is no longer where they left it,
+// whose only fault was a configuration file this version could not read.
+//
+// GRBL and camera settings are deliberately not salvaged. Losing them is
+// annoying and repairable through the web interface - which is only true for as
+// long as the web interface can still be found, and that is what this keeps.
+//
+// Each candidate is validated as a whole config: the rest of it is known good,
+// so a rejection is attributable to the part being tried.
+func Salvage(broken Config) Config {
+	safe := Default()
+	if hostnameRE.MatchString(broken.System.Hostname) {
+		safe.System.Hostname = broken.System.Hostname
+	}
+	wifi := safe
+	wifi.WiFi = broken.WiFi
+	wifiUsable := wifi.Validate() == nil
+	if wifiUsable {
+		safe.WiFi = broken.WiFi
+	}
+	network := safe
+	network.Network = broken.Network
+	if network.Validate() == nil {
+		safe.Network = broken.Network
+	}
+	// setup_complete is the instruction not to start the setup access point.
+	// Keeping it while the Wi-Fi credentials could not be salvaged would leave
+	// a Wi-Fi appliance with no network at all and no way back in - and the
+	// access point is precisely the fallback for that. On an Ethernet appliance
+	// the credentials were never the way in, so their absence proves nothing.
+	if broken.System.SetupComplete && (wifiUsable || !broken.WiFi.Enabled) {
+		safe.System.SetupComplete = true
+	}
+	if safe.Validate() != nil {
+		// Nothing survives that would not itself have to be salvaged. The
+		// appliance is going back to first boot, which is at least a state with
+		// a documented way in.
+		return Default()
+	}
+	return safe
 }
 
 func validatePort(name string, port int) error {

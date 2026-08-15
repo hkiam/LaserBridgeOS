@@ -32,8 +32,11 @@ func setupTestServer(t *testing.T) (http.Handler, *config.Store, string) {
 	if _, err := store.Ensure(); err != nil {
 		t.Fatal(err)
 	}
-	manager := &lbruntime.Manager{Store: store, Dir: filepath.Join(dir, "run"), DataDir: dataDir}
-	server := &Server{Store: store, Runtime: manager}
+	// One root for the whole server: nothing here may read - or write - the
+	// machine running the test.
+	root := filepath.Join(dir, "root")
+	manager := &lbruntime.Manager{Store: store, Dir: filepath.Join(dir, "run"), DataDir: dataDir, Root: root}
+	server := &Server{Store: store, Runtime: manager, Root: root}
 	return server.Handler(), store, dataDir
 }
 
@@ -116,8 +119,11 @@ func TestSetupWithPasswordNeedsNoKeyFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &passwordRunner{}
-	manager := &lbruntime.Manager{Store: store, Dir: filepath.Join(dir, "run"), DataDir: dataDir, Run: runner}
-	handler := (&Server{Store: store, Runtime: manager, Runner: runner}).Handler()
+	// One root for the whole server: nothing here may read - or write - the
+	// machine running the test.
+	root := filepath.Join(dir, "root")
+	manager := &lbruntime.Manager{Store: store, Dir: filepath.Join(dir, "run"), DataDir: dataDir, Run: runner, Root: root}
+	handler := (&Server{Store: store, Runtime: manager, Runner: runner, Root: root}).Handler()
 
 	// A key that a previous step authorized must survive a password-only setup.
 	existing := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEXISTING earlier@key"

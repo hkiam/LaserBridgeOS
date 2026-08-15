@@ -154,6 +154,43 @@ func startWithSim(t *testing.T, overrides, beam bool, adjust func(*Config)) (*co
 	return sim, bridge, client
 }
 
+// waitForCounts waits until the controller has actually received what the
+// bridge decided to send, and then makes sure nothing further arrives.
+//
+// Reading the counters once, straight after waitForIntervention returns, is a
+// race. The bridge records an intervention at the moment it decides on one; the
+// simulator counts a command when the byte reaches the far end of a
+// pseudo-terminal and its goroutine is scheduled to read it. Under load - the
+// whole suite running at once - the second moment lands after the first, and
+// the test then reports a safety step as missing when it was merely still in
+// flight. It failed that way on a laptop and in CI, on a different test each
+// time, which is the worst possible way for a test about switching a laser off
+// to behave: nobody can tell a flake from a regression, so both get ignored.
+//
+// The settle at the end is the other half. Waiting for the expected numbers
+// would pass the instant they are reached, and an escalation that arrives one
+// rung too far - a soft reset after a spindle stop that already worked - would
+// go unseen.
+func waitForCounts(t *testing.T, sim *controllerSim, holds, stops, resets int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		h, s, r := sim.counts()
+		if h == holds && s == stops && r == resets {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("holds = %d, stops = %d, resets = %d; want %d, %d and %d", h, s, r, holds, stops, resets)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if h, s, r := sim.counts(); h != holds || s != stops || r != resets {
+		t.Fatalf("kept going after the ladder was done: holds = %d, stops = %d, resets = %d; want %d, %d and %d",
+			h, s, r, holds, stops, resets)
+	}
+}
+
 func waitForIntervention(t *testing.T, bridge *Bridge, substring string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -175,15 +212,9 @@ func TestHoldIsAcceptedWhenTheControllerSaysTheBeamIsOff(t *testing.T) {
 	client.Close()
 	waitFor(t, func() bool { return bridge.handled.Load() > 0 }, "the departure to be handled")
 
-	holds, stops, resets := sim.counts()
-	if holds != 1 {
-		t.Errorf("feed holds = %d, want 1", holds)
-	}
-	// The controller said the beam is off. Nothing further is warranted, and
-	// ending the job anyway would make the setting a lie.
-	if stops != 0 || resets != 0 {
-		t.Errorf("escalated despite the beam being confirmed off: %d stops, %d resets", stops, resets)
-	}
+	// One feed hold and nothing after it: the controller said the beam is off,
+	// and ending the job anyway would make the setting a lie.
+	waitForCounts(t, sim, 1, 0, 0)
 }
 
 func TestHoldEscalatesWhenTheBeamIsStillOn(t *testing.T) {
@@ -195,14 +226,8 @@ func TestHoldEscalatesWhenTheBeamIsStillOn(t *testing.T) {
 	client.Close()
 	waitForIntervention(t, bridge, "stopping the spindle output")
 
-	holds, stops, resets := sim.counts()
-	if holds != 1 || stops != 1 {
-		t.Errorf("holds = %d, stops = %d, want 1 and 1", holds, stops)
-	}
 	// The spindle stop worked, so the job is left resumable rather than reset.
-	if resets != 0 {
-		t.Errorf("reset the controller even though stopping the output was enough (%d)", resets)
-	}
+	waitForCounts(t, sim, 1, 1, 0)
 }
 
 func TestHoldResetsWhenTheBeamWillNotGoOff(t *testing.T) {
@@ -213,10 +238,8 @@ func TestHoldResetsWhenTheBeamWillNotGoOff(t *testing.T) {
 	client.Close()
 
 	waitForIntervention(t, bridge, "soft reset")
-	holds, stops, resets := sim.counts()
-	if holds != 1 || stops != 1 || resets != 1 {
-		t.Errorf("holds = %d, stops = %d, resets = %d; want the full ladder once each", holds, stops, resets)
-	}
+	// The full ladder, once each.
+	waitForCounts(t, sim, 1, 1, 1)
 	sim.mu.Lock()
 	beam := sim.beam
 	sim.mu.Unlock()
@@ -272,10 +295,7 @@ func TestResetAlwaysEndsWithTheOutputOff(t *testing.T) {
 	client.Close()
 	waitForIntervention(t, bridge, "soft reset")
 
-	holds, _, resets := sim.counts()
-	if holds != 1 || resets != 1 {
-		t.Errorf("holds = %d, resets = %d, want 1 and 1", holds, resets)
-	}
+	waitForCounts(t, sim, 1, 0, 1)
 	sim.mu.Lock()
 	beam := sim.beam
 	sim.mu.Unlock()
@@ -342,13 +362,9 @@ func TestAStandingMachineIsResetRatherThanCoaxed(t *testing.T) {
 	client.Close()
 
 	waitForIntervention(t, bridge, "nothing gentler reaches it")
-	holds, stops, resets := sim.counts()
-	if holds != 0 || stops != 0 {
-		t.Errorf("tried %d holds and %d spindle stops on a standing machine; both are ignored", holds, stops)
-	}
-	if resets != 1 {
-		t.Errorf("resets = %d, want exactly one", resets)
-	}
+	// Neither a feed hold nor the override reaches a machine standing still, so
+	// only the reset is sent.
+	waitForCounts(t, sim, 0, 0, 1)
 }
 
 func TestWatchdogLeavesAMovingMachineAlone(t *testing.T) {

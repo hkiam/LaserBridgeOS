@@ -11,8 +11,14 @@ depend() {
 
 start() {
 	ebegin "Preparing LaserBridgeOS state"
-	mkdir -p /run/laserbridge /run/lock /data/ssh /data/setup /data/home/laserbridge
+	# /data/log is where syslogd writes, and it has to exist before syslogd
+	# starts - which is why syslog declares rc_need on this service.
+	mkdir -p /run/laserbridge /run/lock /data/log /data/ssh /data/setup /data/home/laserbridge
 	chmod 0755 /run/laserbridge /run/lock
+	# Readable by the account that has to diagnose this thing. Restricting it
+	# would inconvenience the one user who can log in, who can become root
+	# anyway (ADR 0008) - the same reasoning that leaves dmesg unrestricted.
+	chmod 0755 /data/log
 	touch /run/resolv.conf
 	/usr/sbin/laserbridge init || return 1
 	chown -R laserbridge:laserbridge /data/home/laserbridge

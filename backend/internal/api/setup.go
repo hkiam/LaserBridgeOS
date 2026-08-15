@@ -253,6 +253,9 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
+	if s.refuseTooManyAttempts(w) {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ok, err := s.Runtime.VerifyPassword(request.Current)
@@ -263,8 +266,8 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not check the current password")
 		return
 	}
+	s.passwords.record(ok)
 	if !ok {
-		time.Sleep(time.Second)
 		writeError(w, http.StatusForbidden, "the current password is wrong")
 		return
 	}

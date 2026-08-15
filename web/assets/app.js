@@ -4,6 +4,8 @@ let csrfToken = '';
 let config = null;
 let toastTimer = null;
 let generatedKeyDownloaded = false;
+let lastETag = '';
+let configETag = '';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
@@ -13,6 +15,10 @@ async function request(path, options = {}) {
   if (options.body) headers.set('Content-Type', 'application/json');
   if (options.method && options.method !== 'GET') headers.set('X-CSRF-Token', csrfToken);
   const response = await fetch(path, {...options, headers});
+  // Whichever configuration this answer describes. Kept so the next save can
+  // say which one it was editing, and be told when that is no longer the one
+  // on disk - a second tab, or somebody at the SSH prompt.
+  lastETag = response.headers.get('ETag') || '';
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body.error || `${response.status} ${response.statusText}`);
   return body;
@@ -41,6 +47,18 @@ function duration(seconds) {
   const secs = seconds % 60;
   return `${days ? `${days}d ` : ''}${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
 }
+// What the kernel is actually doing about USB power saving, which is not the
+// same question as what was saved. A backend serving read-only cannot write
+// sysfs at all, and reporting the saved number as if it had arrived would hide
+// precisely the case worth seeing.
+function usbAutosuspendState(config) {
+  const active = config.usb_autosuspend_active;
+  const spell = value => (value < 0 ? 'off' : `${value} s`);
+  if (active === null || active === undefined) return 'Kernel setting could not be read.';
+  if (active === config.usb_autosuspend) return `Kernel: ${spell(active)}.`;
+  return `Kernel still says ${spell(active)} — the saved setting has not taken effect.`;
+}
+
 function badge(selector, running) {
   const element = $(selector);
   element.textContent = running ? 'RUNNING' : 'STOPPED';
@@ -64,6 +82,13 @@ async function loadStatus() {
     setText('#dash-grbl-device', status.config.grbl_device);
     setText('#dash-grbl-port', `TCP :${status.config.grbl_port}`);
     setText('#dash-grbl-clients', status.clients.grbl);
+    setText('#usb-autosuspend-state', usbAutosuspendState(status.config));
+    // Normally empty. It is not empty on an appliance running an older slot
+    // than the one that wrote /data/config.yaml, and then it is the first thing
+    // worth reading on this page.
+    const warnings = status.config_warnings || [];
+    setText('#config-warning', warnings.join(' · '));
+    $('#config-warning-card').hidden = warnings.length === 0;
     setText('#dash-camera-device', status.config.camera_device);
     setText('#dash-camera-mode', status.config.camera_mode);
     setText('#version', `LaserBridgeOS ${status.version}`);
@@ -86,7 +111,7 @@ async function loadStatus() {
 }
 
 function renderServices(services) {
-  const names = {'laserbridge-web': 'Web interface', ser2net: 'GRBL bridge (ser2net)', laserbridged: 'GRBL bridge (laserbridged)', ustreamer: 'Camera stream', sshd: 'SSH', 'avahi-daemon': 'mDNS / Bonjour'};
+  const names = {'laserbridge-web': 'Web interface', ser2net: 'GRBL bridge (ser2net)', laserbridged: 'GRBL bridge (laserbridged)', ustreamer: 'Camera stream', sshd: 'SSH', 'avahi-daemon': 'mDNS / Bonjour', 'laserbridge-watchdog': 'Hardware watchdog'};
   $('#services').replaceChildren(...Object.entries(names).map(([key, label]) => {
     const row = document.createElement('div');
     row.className = 'service-row';
@@ -100,15 +125,21 @@ function renderServices(services) {
 
 async function loadMachine() {
   const card = $('#machine-card');
+  const fallbackNote = $('#ser2net-note');
   let answer;
   try {
     answer = await request('/api/grbl');
   } catch (error) {
     card.hidden = true;
+    fallbackNote.hidden = true;
     return;
   }
-  // With ser2net in charge there is nothing to ask and nothing to show.
+  // With ser2net in charge there is nothing to ask. Hiding the card and saying
+  // nothing was the old behaviour, and an absence is not a statement: somebody
+  // who switched backends a month ago has nothing left to remind them that the
+  // beam watchdog went with it. So the panel says what is not being watched.
   card.hidden = !answer.available;
+  fallbackNote.hidden = answer.available;
   if (!answer.available) return;
 
   const bridge = answer.bridge;
@@ -212,6 +243,7 @@ function machineClass(machineState, bridgeState) {
 
 async function loadConfig() {
   config = await request('/api/config');
+  configETag = lastETag;
   const grbl = $('#grbl-form').elements;
   grbl.device.value = config.grbl.device;
   grbl.baudrate.value = config.grbl.baudrate;
@@ -232,6 +264,7 @@ async function loadConfig() {
   camera.quality.value = config.camera.quality;
   const system = $('#system-form').elements;
   system.hostname.value = config.system.hostname;
+  system.usb_autosuspend.value = config.system.usb_autosuspend;
   system.network_mode.value = config.network.mode;
   system.ssh_enabled.checked = config.ssh.enabled;
   system.password_authentication.checked = config.ssh.password_authentication;
@@ -287,8 +320,13 @@ async function scanWiFi(button) {
 }
 
 async function saveConfig(message) {
-  const result = await request('/api/config', {method: 'PUT', body: JSON.stringify(config)});
+  const result = await request('/api/config', {
+    method: 'PUT',
+    headers: configETag ? {'If-Match': configETag} : {},
+    body: JSON.stringify(config)
+  });
   config = result.config;
+  configETag = lastETag;
   toast(result.warnings?.length ? `${message}; ${result.warnings.join(', ')}` : message, Boolean(result.warnings?.length));
   await loadStatus();
 }
@@ -312,6 +350,7 @@ $('#system-form').addEventListener('submit', async event => {
   event.preventDefault();
   const f = event.currentTarget.elements;
   config.system.hostname = f.hostname.value;
+  config.system.usb_autosuspend = Number(f.usb_autosuspend.value);
   config.network.mode = f.network_mode.value;
   config.ssh.enabled = f.ssh_enabled.checked;
   config.ssh.password_authentication = f.password_authentication.checked;

@@ -26,7 +26,7 @@ func TestApplyGeneratesRuntimeConfiguration(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &recordRunner{}
-	manager := &Manager{Store: store, Dir: filepath.Join(dir, "run"), Run: runner}
+	manager := &Manager{Store: store, Dir: filepath.Join(dir, "run"), Run: runner, Root: filepath.Join(dir, "sys")}
 	if err := manager.Apply(); err != nil {
 		t.Fatal(err)
 	}

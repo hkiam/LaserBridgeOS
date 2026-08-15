@@ -1,1 +1,20 @@
-SYSLOGD_OPTS="-t -C256"
+# System logs are kept on /data, because the failures that matter here can
+# only be read after the reboot.
+#
+# They used to live in a shared-memory ring: /var/log is a tmpfs, and syslogd
+# ran with -C. Everything it held was gone the moment the appliance restarted -
+# which is exactly the moment somebody wants to know what happened. An
+# out-of-memory kill, a controller that reset the USB bus, a driver that gave
+# up: on a headless machine those leave no other trace. The GRBL journal
+# survives a reboot and is the reason that gap was visible at all; it covers
+# what the bridge saw, and nothing about the system carrying it.
+#
+# 200 KiB per file and two rotations is at most 600 KiB on the data partition,
+# and busybox syslogd does not sync per line, so the cost to a flash device is
+# a few kilobytes of appends per hour rather than a write per message.
+#
+# rc_need is here rather than in the service file because the service file is
+# Alpine's. /data has to be mounted and its directories created before syslogd
+# can open anything under it, and laserbridge-init is what does the second.
+rc_need="laserbridge-init"
+SYSLOGD_OPTS="-t -O /data/log/messages -s 200 -b 2"
