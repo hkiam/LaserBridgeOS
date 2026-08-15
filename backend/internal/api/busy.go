@@ -36,18 +36,33 @@ func (s *Server) machineBusy() (bool, string) {
 	if err != nil {
 		return false, ""
 	}
-	if !status.Machine.State.Moving() {
-		return false, ""
-	}
 	where := ""
 	if status.Machine.HasPosition {
 		where = formatPosition(status.Machine.Position)
 	}
-	reason := describe(status.Machine.State)
-	if where != "" {
-		reason += " at " + where
+	if status.Machine.State.Moving() {
+		reason := describe(status.Machine.State)
+		if where != "" {
+			reason += " at " + where
+		}
+		return true, reason
 	}
-	return true, reason
+	// A machine that is not moving this instant is not a machine with nothing
+	// in front of it. A pierce, a pause, somebody changing the material - the
+	// old question let all three through, so the guard was open at exactly the
+	// moments it was written for. The bridge keeps a job open until the machine
+	// has been still for a while with nobody sending.
+	if status.Job.Running {
+		reason := "a job is running"
+		if status.Job.Lines > 0 {
+			reason += " (" + strconv.FormatUint(status.Job.Lines, 10) + " lines so far)"
+		}
+		if where != "" {
+			reason += ", the machine standing at " + where
+		}
+		return true, reason
+	}
+	return false, ""
 }
 
 // describe puts GRBL's state into a sentence. Lowercasing the word GRBL uses

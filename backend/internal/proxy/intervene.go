@@ -199,6 +199,9 @@ func (b *Bridge) takeOverFromClient(why string) {
 	// is not.
 	_ = client.SetWriteDeadline(time.Now().Add(dropMessageTimeout))
 	_, _ = client.Write([]byte("[MSG:LaserBridgeOS took over: " + oneLine(why) + "]\r\n"))
+	if note := b.jobs.end("stopped by the bridge", time.Now()); note != "" {
+		b.note("job", note)
+	}
 	b.logf("dropping client %s: %s", client.RemoteAddr(), why)
 	// Recorded as an intervention, not as a client event: routine connects and
 	// disconnects stay in memory, and this one has to survive the restart that

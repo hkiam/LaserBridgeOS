@@ -81,6 +81,11 @@ func (b *Bridge) watch(ctx context.Context) {
 
 		machine := b.observer.Machine()
 		now := time.Now()
+		// The job is followed here because this is the one loop that sees the
+		// machine at a steady rate whether or not anybody is connected.
+		if note := b.jobs.observe(machine, b.lines.Load(), b.rx.Load(), now, int64(time.Since(started).Seconds())); note != "" {
+			b.note("job", note)
+		}
 		if machine.HasPosition && (machine.Position != lastPosition || movedAt.IsZero()) {
 			lastPosition, movedAt = machine.Position, now
 		}

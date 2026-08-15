@@ -466,6 +466,21 @@ disconnects stay in memory only, for the same reason; when the bridge drops a
 client itself, that is recorded as an intervention, because it is one.
 `GET /api/grbl/journal` and the GRBL Bridge page show the same thing.
 
+### What counts as a job
+
+The appliance keeps a notion of the work in front of the machine, separate from
+what the machine is doing this instant. A job begins when the machine starts
+moving and ends when it has stood still for fifteen seconds, when the client
+leaves, or when the bridge stops it — and it says which. It carries the lines
+and bytes the client sent, where the machine started and where it was last
+seen, and how long it ran, measured on the uptime clock so a wrong wall clock
+cannot distort it.
+
+This exists because "is the machine moving right now" is false during a pierce,
+during a pause and while somebody changes the material, so the guards below
+were open at exactly the moments they were written for. They now ask whether a
+job is running.
+
 ### Not interrupting a job
 
 Saving GRBL settings restarts the bridge, installing an update rewrites a root
