@@ -11,6 +11,17 @@ import (
 	"time"
 )
 
+// overrideEvery is how many status reports GRBL 1.1 sends between two Ov:
+// blocks when nothing changes. report.c uses ten.
+// GRBL 1.1 config.h: the Ov: block is printed when a counter runs out, and the
+// counter is reloaded with a different value depending on what the machine is
+// doing. Twenty while moving is the number that matters - that is the state the
+// appliance intervenes in.
+const (
+	overrideEveryIdle = 10
+	overrideEveryBusy = 20
+)
+
 // controllerSim answers status requests the way GRBL 1.1 does, and lets a test
 // decide what it says about its own laser output.
 //
@@ -35,11 +46,16 @@ type controllerSim struct {
 	// ignoreStop is a controller that does not implement the spindle-stop
 	// override, or implements it and leaves the laser on anyway.
 	ignoreStop bool
-	holds      int
-	stops      int
-	resets     int
-	pollCount  int
-	x          float64
+	// sinceOverrides counts reports since the Ov: block was last printed, and
+	// lastReportedBeam is what it said then - a change forces the block out
+	// immediately, as it does on the real controller.
+	sinceOverrides   int
+	lastReportedBeam bool
+	holds            int
+	stops            int
+	resets           int
+	pollCount        int
+	x                float64
 }
 
 func (c *controllerSim) polls() int {
@@ -105,10 +121,35 @@ func (c *controllerSim) handle(b byte) {
 	case statusReq:
 		c.pollCount++
 		report := fmt.Sprintf("<%s|MPos:%.3f,2.000,0.000|FS:0,0", c.state, c.x)
+		// GRBL does not mention its outputs in every report. report.c prints
+		// the Ov: block - and the A: field with it - when a counter runs out,
+		// which is every tenth report, and immediately whenever an override or
+		// an accessory state has changed. Between those it says nothing about
+		// them at all.
+		//
+		// This simulator used to append Ov: to every single report, which made
+		// the appliance's evidence about the laser ten times more plentiful in
+		// the tests than it can ever be on a real machine. That is precisely
+		// the assumption that hid "Laser output: off" on a cutting machine, and
+		// modelling the real cadence is the point of the whole exercise.
 		if c.overrides {
-			report += "|Ov:100,100,100"
-			if c.beam {
-				report += "|A:S"
+			c.sinceOverrides++
+			changed := c.beam != c.lastReportedBeam
+			every := overrideEveryIdle
+			if c.state == "Run" || c.state == "Jog" {
+				every = overrideEveryBusy
+			}
+			if changed || c.sinceOverrides >= every {
+				c.sinceOverrides = 0
+				c.lastReportedBeam = c.beam
+				report += "|Ov:100,100,100"
+				// A: is appended only when something is actually on. Its
+				// absence beside Ov: is the controller saying everything is
+				// off, which is the only reason that absence can be read as
+				// evidence at all.
+				if c.beam {
+					report += "|A:S"
+				}
 			}
 		}
 		_, _ = c.controller.Write([]byte(report + ">\r\n"))
@@ -144,6 +185,10 @@ func startWithSim(t *testing.T, overrides, beam bool, adjust func(*Config)) (*co
 	t.Helper()
 	controller, address, bridge := startBridgeWith(t, func(c *Config) {
 		c.HoldSettle = time.Second
+		// Long enough for the real cadence: twenty reports while moving, asked
+		// for every hundred milliseconds. Shortening this is how a test comes
+		// to pass against a controller that talks more than any real one.
+		c.BeamConfirm = 3 * time.Second
 		adjust(c)
 	})
 	sim := &controllerSim{t: t, controller: controller, state: "Run", beam: beam, overrides: overrides}

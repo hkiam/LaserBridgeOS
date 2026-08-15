@@ -82,6 +82,18 @@ type Config struct {
 	// HoldSettle bounds how long the bridge waits for the machine to come to
 	// rest after a feed hold before it sends a soft reset.
 	HoldSettle time.Duration
+	// BeamConfirm bounds how long the bridge waits for the controller to say
+	// what its outputs are doing, after having asked it to change them.
+	//
+	// It is a budget of its own because it is a different question with a
+	// different answer rate. Whether the axes have stopped can be read from
+	// every status report; whether the output is on appears only in the Ov:
+	// block, which GRBL prints every tenth report when idle and every
+	// twentieth while moving. Sharing HoldSettle's three seconds meant asking
+	// twenty times at 150ms and giving up at exactly the twentieth report -
+	// the confirmation the whole escalation in ADR 0013 rests on was decided
+	// by jitter.
+	BeamConfirm time.Duration
 	// SilenceAfter is how long a controller that had been answering may say
 	// nothing before the bridge reports it as silent.
 	SilenceAfter time.Duration
@@ -194,6 +206,12 @@ func New(config Config, logger *log.Logger) *Bridge {
 	}
 	if config.HoldSettle <= 0 {
 		config.HoldSettle = 3 * time.Second
+	}
+	if config.BeamConfirm <= 0 {
+		// Fifty reports at the interval below: two and a half times the worst
+		// documented cadence, so a missed confirmation means the controller
+		// really did not say, rather than that nobody waited long enough.
+		config.BeamConfirm = 5 * time.Second
 	}
 	if config.OnDisconnect == "" {
 		config.OnDisconnect = DisconnectReset
