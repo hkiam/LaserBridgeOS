@@ -189,7 +189,15 @@ func (b *Bridge) takeOverFromClient(why string) {
 	if client == nil {
 		return
 	}
-	_ = client.SetWriteDeadline(time.Now().Add(b.config.ClientWriteTimeout))
+	// A deadline of its own, and a short one. The ordinary write timeout is
+	// five seconds, which is the right patience for a client that is receiving
+	// a job - and exactly the wrong patience here: the case this whole
+	// mechanism exists for is a sender that has stopped reading, so its receive
+	// window is full and this write is the one that blocks. Five seconds of
+	// waiting to be polite, before the laser is dealt with, would make the
+	// courtesy cost more than it is worth. The message is a courtesy; the stop
+	// is not.
+	_ = client.SetWriteDeadline(time.Now().Add(dropMessageTimeout))
 	_, _ = client.Write([]byte("[MSG:LaserBridgeOS took over: " + oneLine(why) + "]\r\n"))
 	b.logf("dropping client %s: %s", client.RemoteAddr(), why)
 	// Recorded as an intervention, not as a client event: routine connects and
@@ -199,6 +207,11 @@ func (b *Bridge) takeOverFromClient(why string) {
 	b.note("intervention", "dropped "+client.RemoteAddr().String()+" because the bridge took the machine over: "+why)
 	_ = client.Close()
 }
+
+// dropMessageTimeout bounds how long the bridge will wait to tell a client
+// why it is being dropped. Long enough for a client that is reading its socket,
+// short enough that one that is not costs a fraction of a second.
+const dropMessageTimeout = 200 * time.Millisecond
 
 // oneLine keeps a reason inside a GRBL message. Square brackets end the
 // message and a line ending ends the line, so neither may travel inside one.
