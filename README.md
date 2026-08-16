@@ -163,7 +163,10 @@ asks for a new one.
 
 Key authentication works alongside it and stays available: the wizard can
 install the device-generated key or your own public key, and there is no
-shared default private key. On a network you do not fully trust, install a key
+shared default private key. `ssh-copy-id` works the way it does everywhere
+else — sshd reads both the appliance's own list under `/data/ssh` and the
+conventional `~/.ssh/authorized_keys`. Only the first is consulted when an
+update signature is verified. On a network you do not fully trust, install a key
 and switch **SSH password authentication** off on the System page. Root SSH
 login is disabled and empty passwords are rejected regardless. See ADR 0006.
 

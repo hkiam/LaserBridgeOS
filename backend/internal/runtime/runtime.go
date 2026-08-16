@@ -95,10 +95,28 @@ func (m *Manager) Apply() error {
 	if cfg.SSH.PasswordAuthentication {
 		passwordAuth = "yes"
 	}
+	// Two places for authorized keys, and the second one is the conventional
+	// one on purpose.
+	//
+	// The appliance keeps its own list under /data/ssh, which is where the
+	// setup wizard installs a key and where the update signature is checked
+	// against. sshd was told about that file and no other, so ssh-copy-id -
+	// which writes to ~/.ssh/authorized_keys like it does everywhere else -
+	// reported success and changed nothing sshd would ever read. Somebody loses
+	// an afternoon to that exactly once, and then loses it again on the next
+	// appliance.
+	//
+	// Nothing is given away by accepting both: whoever can write into that home
+	// directory is already logged in as the account, and that account may use
+	// doas without a password (ADR 0008).
+	//
+	// %%h is sshd's token for the home directory and has to survive Sprintf,
+	// which would otherwise read it as a verb of its own - go vet says so
+	// before the appliance would have.
 	sshd := fmt.Sprintf(`Port 22
 ListenAddress 0.0.0.0
 HostKey /data/ssh/ssh_host_ed25519_key
-AuthorizedKeysFile /data/ssh/authorized_keys
+AuthorizedKeysFile /data/ssh/authorized_keys %%h/.ssh/authorized_keys
 PermitRootLogin no
 PasswordAuthentication %s
 KbdInteractiveAuthentication no
