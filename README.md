@@ -222,6 +222,33 @@ successful installation. The WebUI can stage the previous slot for the next
 boot. There is deliberately no interactive boot menu or boot delay. Offline
 recovery can select a slot by editing `boot/active-slot.cfg` on `LBBOOT`.
 
+### Two things an update cannot do
+
+**It cannot change how the appliance boots.** The updater writes the inactive
+slot's kernel and initramfs, `active-slot.cfg` and `grubenv` — and nothing
+else. `grub.cfg` is embedded in the GRUB EFI binary on the ESP, which no bundle
+touches, so the boot policy on a running appliance is whatever was flashed
+onto it. An appliance imaged before `usbcore.autosuspend=-1` was added to the
+kernel command line still boots without it, and picks the policy up from
+userspace a few seconds later instead (ADR 0015 covers what that costs). The
+boot-attempt counter and the slot layout are in the same position: they are
+image properties, not update properties. Anything at that level needs a
+reflash.
+
+**It cannot promise the appliance comes back by itself.** The shutdown is
+orderly and the watchdog is disarmed on the way out — deliberately, so that a
+deliberate poweroff is not a delayed reset. If the firmware then declines to
+carry out the reset, as some small x86 boards do, nothing is left to notice:
+the machine is off and stays off until somebody cycles the power. This has
+been seen on a Z83-F, where the log ends with `watchdog disarmed` and the next
+line is the next boot, forty-five minutes later with a hand on the switch.
+
+So: **plan an update for a moment when you can reach the appliance.** It is
+not the common case, and when it happens it is not a failure of the update —
+the new slot boots normally once the board is powered again, and the
+boot-attempt counter still falls back to the old slot if it does not. See
+ADR 0021.
+
 ### Rolling back to an older slot
 
 `/data` is shared by both slots, so a rollback hands an older binary a
