@@ -79,8 +79,15 @@ type Machine struct {
 	State       MachineState `json:"state,omitempty"`
 	Position    Position     `json:"position"`
 	HasPosition bool         `json:"has_position"`
-	Feed        float64      `json:"feed"`
-	Spindle     float64      `json:"spindle"`
+	// Work is the same point in work coordinates - what the operator set a
+	// zero in, and what every sender in this field puts in front of them.
+	Work Position `json:"work"`
+	// Offset is WCO: work = machine - offset. GRBL sends it every ten to
+	// thirty reports, so it is remembered between them.
+	Offset    Position `json:"offset"`
+	HasOffset bool     `json:"has_offset"`
+	Feed      float64  `json:"feed"`
+	Spindle   float64  `json:"spindle"`
 	// AlarmCode is the last ALARM: number, LastError the last error: number.
 	AlarmCode int `json:"alarm_code,omitempty"`
 	LastError int `json:"last_error_code,omitempty"`
@@ -227,8 +234,23 @@ func (o *Observer) apply(report Report) {
 		o.machine.State = report.State
 		o.machine.Feed = report.Feed
 		o.machine.Spindle = report.Spindle
+		if report.HasOffset {
+			o.machine.Offset = report.Offset
+			o.machine.HasOffset = true
+		}
 		if report.HasPosition {
-			o.machine.Position = report.Position
+			// Both coordinate systems are kept, because they answer different
+			// questions: an operator sets a zero and works in work
+			// coordinates, while the record and the machine's own limits are
+			// in machine coordinates. Which one arrives depends on $10, so the
+			// other is derived from the offset once that is known.
+			if report.PositionIsWork {
+				o.machine.Work = report.Position
+				o.machine.Position = add(report.Position, o.machine.Offset)
+			} else {
+				o.machine.Position = report.Position
+				o.machine.Work = subtract(report.Position, o.machine.Offset)
+			}
 			o.machine.HasPosition = true
 		}
 		if report.State != StateAlarm {
@@ -313,6 +335,14 @@ func (o *Observer) apply(report Report) {
 			HardLimits: o.machine.HardLimits,
 		}
 	}
+}
+
+func add(a, b Position) Position {
+	return Position{X: a.X + b.X, Y: a.Y + b.Y, Z: a.Z + b.Z}
+}
+
+func subtract(a, b Position) Position {
+	return Position{X: a.X - b.X, Y: a.Y - b.Y, Z: a.Z - b.Z}
 }
 
 // onOff reads one of GRBL's boolean settings. Anything that is not zero is on,

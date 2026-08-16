@@ -76,3 +76,37 @@ func TestSteeringRejectsAMalformedBody(t *testing.T) {
 		t.Fatalf("status = %d, want an unknown field refused", response.Code)
 	}
 }
+
+// The console is a read and answers like the journal does: with ser2net in
+// charge there is nothing to show, and saying so is not the same as an error.
+func TestTheConsoleSaysNothingIsRecordedUnderSer2net(t *testing.T) {
+	handler, store, _ := testServer(t)
+	cfg, _ := store.Load()
+	cfg.GRBL.Backend = "ser2net"
+	if err := store.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/grbl/console?after=12", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", response.Code)
+	}
+	if !strings.Contains(response.Body.String(), `"available":false`) {
+		t.Fatalf("body = %s", response.Body.String())
+	}
+}
+
+// A typed command travels the same road as a jog, so it meets the same guards.
+func TestATypedCommandIsRefusedUnderSer2netLikeEverythingElse(t *testing.T) {
+	handler, store, _ := testServer(t)
+	cfg, _ := store.Load()
+	cfg.GRBL.Backend = "ser2net"
+	if err := store.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	response := steerRequest(t, handler, "send", `{"line":"$$"}`)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", response.Code)
+	}
+}

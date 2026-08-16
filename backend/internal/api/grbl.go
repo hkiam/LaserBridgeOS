@@ -74,6 +74,46 @@ func (s *Server) grblJournal(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"available": true, "events": events})
 }
 
+// grblConsole hands out the transcript: what the client and the controller
+// have said to each other since the caller last asked.
+//
+// The polling is what keeps it being recorded, which is deliberate - see the
+// note in the proxy package. A caller that stops asking stops the recording
+// within seconds, and the byte path between the machine and the client goes
+// back to doing nothing on anybody's behalf.
+func (s *Server) grblConsole(w http.ResponseWriter, r *http.Request) {
+	after := uint64(0)
+	if raw := r.URL.Query().Get("after"); raw != "" {
+		if parsed, err := strconv.ParseUint(raw, 10, 64); err == nil {
+			after = parsed
+		}
+	}
+	cfg, err := s.Store.Load()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if cfg.GRBL.Backend != config.BackendLaserbridged {
+		writeJSON(w, http.StatusOK, map[string]any{"available": false, "lines": []proxy.ConsoleLine{}})
+		return
+	}
+	view, err := proxy.ReadConsole(s.bridgeSocket(), after)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"available": false, "lines": []proxy.ConsoleLine{}, "reason": err.Error()})
+		return
+	}
+	if view.Lines == nil {
+		view.Lines = []proxy.ConsoleLine{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"available": true,
+		"lines":     view.Lines,
+		"next":      view.Next,
+		"missed":    view.Missed,
+		"recording": view.Recording,
+	})
+}
+
 func (s *Server) bridgeSocket() string {
 	if s.BridgeSocket != "" {
 		return s.BridgeSocket

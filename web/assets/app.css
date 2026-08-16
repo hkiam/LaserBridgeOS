@@ -168,7 +168,12 @@ label.choice input { width: 17px; height: 17px; accent-color: var(--accent); }
 
 /* Steering. The pad is finger-sized on purpose: it is used standing at a
    machine, often with one hand, and a mis-click moves an axis. */
-.control-grid { display: grid; gap: 22px; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); align-items: start; }
+.control-grid { display: grid; gap: 22px 26px; grid-template-columns: auto minmax(150px, 1fr); align-items: start; }
+/* The pad and the step size belong together at the top; everything that is
+   pressed less often - homing, hold, the aiming beam - spreads across the full
+   width below them rather than making a third narrow column. */
+.control-grid > .control-column:last-child { grid-column: 1 / -1; grid-template-columns: repeat(auto-fit, minmax(175px, 1fr)); align-items: start; padding-top: 18px; border-top: 1px solid var(--line); }
+.control-column .actions { margin: 0; padding-top: 0; border-top: 0; }
 .jog-pad { display: grid; grid-template-columns: repeat(3, 54px); grid-template-rows: repeat(3, 54px); gap: 6px; justify-content: center; }
 .jog-pad .button { font-size: 18px; padding: 0; }
 .jog-pad .button[data-axis="Y"][data-sign="1"] { grid-area: 1 / 2; }
@@ -178,7 +183,8 @@ label.choice input { width: 17px; height: 17px; accent-color: var(--accent); }
 .jog-centre { grid-area: 2 / 2; display: flex; align-items: center; justify-content: center; font: 650 11px/1 monospace; color: var(--muted); }
 .control-column { display: grid; gap: 12px; }
 .control-column .actions { margin: 0; }
-.aim-toggle { margin-top: 4px; }
+.aim-group { display: grid; gap: 8px; }
+.aim-toggle { margin: 0; padding: 0; align-self: start; }
 .stop-row { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); align-items: flex-start; gap: 16px; }
 .stop-row .machine-warning { margin: 0; flex: 1; }
 
@@ -214,4 +220,66 @@ label.choice input { width: 17px; height: 17px; accent-color: var(--accent); }
 }
 @media (max-width: 640px) {
   .journal-row { grid-template-columns: 1fr; }
+}
+
+/* The machine page: a readout and a jog pad on the left, what the camera sees
+   and what crossed the wire on the right. Two columns because that is the pair
+   of questions an operator holds at once - where is it, and what is it saying -
+   and a single column makes one of them a scroll away. */
+.heading-state { display: flex; align-items: center; gap: 10px; }
+.machine-layout { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.machine-column { display: grid; gap: 16px; align-content: start; min-width: 0; }
+
+/* The readout. Work coordinates large, machine coordinates small underneath:
+   the operator set the work zero and works to it, and the machine coordinates
+   are the reference that explains a limit or a line in the record. */
+.dro { display: grid; gap: 10px; }
+.dro-axis { display: grid; grid-template-columns: 1.6rem minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: #070a0e; }
+.dro-name { grid-area: 1 / 1; font: 650 13px/1 monospace; color: var(--accent); }
+.dro-axis strong { grid-area: 1 / 2; text-align: right; font: 600 26px/1 monospace; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+.dro-axis small { grid-area: 2 / 2; text-align: right; color: var(--muted); font: 400 10px/1 monospace; font-variant-numeric: tabular-nums; margin-top: 5px; }
+.dro-axis .button { grid-area: 1 / 3 / span 2; }
+.goto-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto auto; gap: 9px; align-items: end; margin-top: 16px; }
+.goto-row label { font-size: 11px; }
+.goto-row input { padding: 8px 9px; font: 13px/1 monospace; }
+.goto-row .button { padding: 9px 12px; }
+.goto-note { margin: 10px 0 0; line-height: 1.55; }
+
+/* The console. Fixed height and its own scroll: it is a window onto a stream,
+   and a card that grows with the traffic would push the steering off screen
+   exactly when the machine is busy. */
+.console-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-bottom: 12px; }
+.console-filters label.toggle { padding: 0; gap: 6px; font-size: 11px; }
+.console-filters label.toggle input { width: 14px; height: 14px; }
+.console-filters input[type="search"] { flex: 1; min-width: 130px; padding: 7px 9px; font-size: 12px; }
+.console-out { height: 320px; overflow: auto; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: #070a0e; font: 11px/1.6 monospace; overflow-wrap: anywhere; }
+.console-out p { margin: 0; }
+.console-line { display: grid; grid-template-columns: 1rem minmax(0, 1fr); gap: 8px; }
+.console-mark { color: var(--muted); }
+.console-sent .console-text { color: #9ec5ff; }
+.console-received .console-text { color: #b8c6d4; }
+.console-appliance .console-mark, .console-appliance .console-text { color: var(--accent); }
+.console-gap .console-text { color: var(--warning); }
+.console-input { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 9px; margin-top: 12px; }
+.console-input input { font: 12px/1 monospace; }
+.console-note { margin: 10px 0 0; line-height: 1.55; }
+
+/* Everything that belongs to the machine but is not needed while standing at
+   it: the record, and the settings that decide how the port is carried. */
+.details-card { margin-top: 16px; padding: 0; }
+.details-card > summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; padding: 18px 21px; cursor: pointer; font-size: 15px; font-weight: 650; letter-spacing: -.01em; list-style: none; }
+.details-card > summary::-webkit-details-marker { display: none; }
+.details-card > summary::before { content: "\203A"; color: var(--accent); font-size: 18px; line-height: 1; transition: transform .15s ease-out; }
+.details-card[open] > summary::before { transform: rotate(90deg); }
+.details-card[open] > summary { border-bottom: 1px solid var(--line); }
+.details-card > *:not(summary) { padding: 0 21px 21px; }
+.details-card > form.config-form { padding-top: 21px; }
+.details-card #machine-journal { padding-top: 14px; }
+
+@media (max-width: 1150px) {
+  .machine-layout { grid-template-columns: 1fr; }
+}
+@media (max-width: 640px) {
+  .goto-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .goto-row .button { grid-column: span 3; }
 }

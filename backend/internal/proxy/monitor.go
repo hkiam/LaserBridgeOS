@@ -32,10 +32,14 @@ type monitors struct {
 	// the transcript is made of lines rather than of network chunks.
 	towards strings.Builder
 	from    strings.Builder
+	// ring is the same transcript kept for the web interface. It is the second
+	// audience for the work below, which is why the assembly runs when either
+	// of them is listening.
+	ring *console
 }
 
-func newMonitors(writeTimeout time.Duration) *monitors {
-	return &monitors{subs: map[net.Conn]struct{}{}, writeTimeout: writeTimeout}
+func newMonitors(writeTimeout time.Duration, ring *console) *monitors {
+	return &monitors{subs: map[net.Conn]struct{}{}, writeTimeout: writeTimeout, ring: ring}
 }
 
 func (m *monitors) add(conn net.Conn) {
@@ -65,8 +69,10 @@ func (m *monitors) count() int {
 // chunk boundaries have nothing to do with the conversation, and a transcript
 // that splits "FS:600,255" across two entries is not one anybody can read.
 func (m *monitors) send(prefix byte, data []byte) {
+	now := time.Now()
+	recording := m.ring != nil && m.ring.recording(now)
 	m.mu.Lock()
-	if len(m.subs) == 0 {
+	if len(m.subs) == 0 && !recording {
 		// Still drop whatever was half-assembled: it belongs to a conversation
 		// nobody was watching.
 		m.towards.Reset()
@@ -75,7 +81,17 @@ func (m *monitors) send(prefix byte, data []byte) {
 		return
 	}
 
+	// out goes to the monitor port as bytes, kept goes to the ring as lines.
+	// Both are built here because the split into lines is the expensive part
+	// and neither audience wants the chunks the wire happened to produce.
 	var out []byte
+	var kept []ConsoleLine
+	appendLine := func(out []byte, prefix byte, text string) []byte {
+		if recording {
+			kept = append(kept, ConsoleLine{Mark: string(rune(prefix)), Text: text})
+		}
+		return appendMarked(out, prefix, text)
+	}
 	// The bridge's own commands share the direction of the client's, so they
 	// share its buffer; only the mark differs.
 	partial, other := &m.towards, &m.from
@@ -120,7 +136,13 @@ func (m *monitors) send(prefix byte, data []byte) {
 	timeout := m.writeTimeout
 	m.mu.Unlock()
 
-	if len(out) == 0 {
+	// Outside the lock: the ring takes its own, and the order between them is
+	// only ever this one.
+	for _, line := range kept {
+		m.ring.add(line.Mark[0], line.Text, now)
+	}
+
+	if len(out) == 0 || len(conns) == 0 {
 		return
 	}
 	for _, conn := range conns {
@@ -131,7 +153,7 @@ func (m *monitors) send(prefix byte, data []byte) {
 	}
 }
 
-func appendLine(out []byte, prefix byte, text string) []byte {
+func appendMarked(out []byte, prefix byte, text string) []byte {
 	out = append(out, prefix, ' ')
 	out = append(out, text...)
 	return append(out, '\n')

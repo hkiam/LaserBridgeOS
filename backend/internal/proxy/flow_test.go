@@ -19,11 +19,11 @@ func TestJoggingFasterThanTheControllerAnswersIsRefused(t *testing.T) {
 
 	// Nothing is reading the controller side, so nothing is answered.
 	for i := 0; i < outstandingLines; i++ {
-		if err := bridge.Do(CommandJog, Jog{Axis: "X", Distance: 1, Feed: 1000}, 0, "holder"); err != nil {
+		if err := bridge.Do(CommandRequest{Command: CommandJog, Axis: "X", Distance: 1, Feed: 1000, Holder: "holder"}); err != nil {
 			t.Fatalf("jog %d was refused: %v", i+1, err)
 		}
 	}
-	err := bridge.Do(CommandJog, Jog{Axis: "X", Distance: 1, Feed: 1000}, 0, "holder")
+	err := bridge.Do(CommandRequest{Command: CommandJog, Axis: "X", Distance: 1, Feed: 1000, Holder: "holder"})
 	if err != ErrStillWorking {
 		t.Fatalf("err = %v, want the pad to wait for the controller", err)
 	}
@@ -33,7 +33,7 @@ func TestJoggingFasterThanTheControllerAnswersIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool {
-		return bridge.Do(CommandJog, Jog{Axis: "X", Distance: 1, Feed: 1000}, 0, "holder") == nil
+		return bridge.Do(CommandRequest{Command: CommandJog, Axis: "X", Distance: 1, Feed: 1000, Holder: "holder"}) == nil
 	}, "the answered slot to be reusable")
 }
 
@@ -43,9 +43,9 @@ func TestAStopStillWorksWhileTheQueueIsFull(t *testing.T) {
 	controller, _, bridge := startBridgeWith(t, func(c *Config) {})
 	waitFor(t, func() bool { return bridge.Status().Device != "" }, "the port to open")
 	for i := 0; i < outstandingLines; i++ {
-		_ = bridge.Do(CommandJog, Jog{Axis: "X", Distance: 1, Feed: 1000}, 0, "holder")
+		_ = bridge.Do(CommandRequest{Command: CommandJog, Axis: "X", Distance: 1, Feed: 1000, Holder: "holder"})
 	}
-	if err := bridge.Do(CommandStop, Jog{}, 0, "holder"); err != nil {
+	if err := bridge.Do(CommandRequest{Command: CommandStop, Holder: "holder"}); err != nil {
 		t.Fatalf("Stop was refused with a full queue: %v", err)
 	}
 	_ = controller
@@ -63,20 +63,20 @@ func TestOnlyOneSessionMayHoldTheAimingBeam(t *testing.T) {
 	t.Cleanup(func() { close(done) })
 	waitFor(t, func() bool { return bridge.Status().Device != "" }, "the port to open")
 
-	if err := bridge.Do(CommandAim, Jog{}, 2, "session one"); err != nil {
+	if err := bridge.Do(CommandRequest{Command: CommandAim, Percent: 2, Holder: "session one"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := bridge.Do(CommandAim, Jog{}, 40, "session two"); err != ErrSomebodyElseIsAiming {
+	if err := bridge.Do(CommandRequest{Command: CommandAim, Percent: 40, Holder: "session two"}); err != ErrSomebodyElseIsAiming {
 		t.Fatalf("err = %v, want the second session refused", err)
 	}
-	if err := bridge.Do(CommandAimOff, Jog{}, 0, "session two"); err != ErrSomebodyElseIsAiming {
+	if err := bridge.Do(CommandRequest{Command: CommandAimOff, Holder: "session two"}); err != ErrSomebodyElseIsAiming {
 		t.Fatalf("err = %v, want the second session unable to let go of it either", err)
 	}
 	// The holder may renew and may let go.
 	if _, err := bridge.aim.hold("session one", 2, time.Now()); err != nil {
 		t.Fatalf("the holder could not renew: %v", err)
 	}
-	if err := bridge.Do(CommandAimOff, Jog{}, 0, "session one"); err != nil {
+	if err := bridge.Do(CommandRequest{Command: CommandAimOff, Holder: "session one"}); err != nil {
 		t.Fatalf("the holder could not let go: %v", err)
 	}
 }

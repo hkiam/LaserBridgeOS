@@ -43,7 +43,50 @@ const (
 	CommandJogCancel Command = "jog-cancel"
 	CommandAim       Command = "aim"
 	CommandAimOff    Command = "aim-off"
+	// CommandGoTo moves to a position instead of by a distance, and
+	// CommandSend carries a line the operator typed. Both are the jog pad's
+	// argument taken one step further: an operator who can move a machine one
+	// millimetre at a time can already put it anywhere, and refusing to let
+	// them say where they want it only makes them press the arrow forty times.
+	CommandGoTo Command = "goto"
+	CommandSend Command = "send"
+	// CommandZero sets the work origin here. It is the other half of showing
+	// work coordinates at all: a reading in a coordinate system nobody can set
+	// is a reading of the wrong thing, and setting it by hand means typing
+	// G10 L20 P1 X0 from memory.
+	CommandZero Command = "zero"
 )
+
+// CommandRequest is an operator's command on its way to the daemon, and
+// CommandAnswer is what came back. An empty Error means it was sent; it does
+// not mean the machine did anything, which only the machine can say.
+//
+// It travels over the status socket as JSON and is also what Do takes, so
+// there is one description of a command rather than one per hop.
+type CommandRequest struct {
+	Command Command `json:"command"`
+	// Axis, Distance and Feed describe a jog: a relative move.
+	Axis     string  `json:"axis,omitempty"`
+	Distance float64 `json:"distance,omitempty"`
+	Feed     float64 `json:"feed,omitempty"`
+	// X, Y and Z describe a go-to: an absolute position in work coordinates.
+	// An axis that is not given is left where it is, which is what makes
+	// "go to X0 Y0" mean the work origin and not "drop the head to Z0".
+	X *float64 `json:"x,omitempty"`
+	Y *float64 `json:"y,omitempty"`
+	Z *float64 `json:"z,omitempty"`
+	// Percent is the aiming beam's power.
+	Percent int `json:"percent,omitempty"`
+	// Line is a command typed by an operator, sent as it stands.
+	Line string `json:"line,omitempty"`
+	// Holder identifies who is asking - a browser session, not a person. It
+	// decides who may hold the aiming beam and it goes into the record.
+	Holder string `json:"holder,omitempty"`
+}
+
+type CommandAnswer struct {
+	Error string `json:"error,omitempty"`
+}
 
 var (
 	// ErrClientInCharge is returned for everything but Stop while a client is
@@ -152,7 +195,8 @@ func (b *Bridge) Aiming() bool { return b.aim.live(time.Now()) }
 // decides who may hold the aiming beam and it goes into the record, because a
 // journal that says the machine moved without saying who moved it answers the
 // wrong question.
-func (b *Bridge) Do(command Command, jog Jog, percent int, holder string) error {
+func (b *Bridge) Do(request CommandRequest) error {
+	command, holder := request.Command, request.Holder
 	port := b.currentPort()
 	if port == nil {
 		return ErrNoPort
@@ -186,12 +230,31 @@ func (b *Bridge) Do(command Command, jog Jog, percent int, holder string) error 
 	case CommandUnlock:
 		return b.commanded(command, holder, "$X", b.sendLine(port, "$X"))
 	case CommandJog:
-		line, err := jogLine(jog)
+		line, err := jogLine(Jog{Axis: request.Axis, Distance: request.Distance, Feed: request.Feed})
 		if err != nil {
 			return err
 		}
 		return b.commanded(command, holder, line, b.sendLine(port, line))
+	case CommandGoTo:
+		line, err := gotoLine(request)
+		if err != nil {
+			return err
+		}
+		return b.commanded(command, holder, line, b.sendLine(port, line))
+	case CommandZero:
+		line, err := zeroLine(request.Axis)
+		if err != nil {
+			return err
+		}
+		return b.commanded(command, holder, line, b.sendLine(port, line))
+	case CommandSend:
+		line, err := typedLine(request.Line)
+		if err != nil {
+			return err
+		}
+		return b.commanded(command, holder, line+" (typed)", b.sendLine(port, line))
 	case CommandAim:
+		percent := request.Percent
 		if percent < 1 || percent > 100 {
 			return errors.New("aiming power must be between 1 and 100 percent")
 		}
@@ -266,6 +329,96 @@ func jogLine(jog Jog) (string, error) {
 	// G91 relative, G21 millimetres, stated every time: a jog that inherited a
 	// G20 from whatever ran before it would move twenty-five times too far.
 	return fmt.Sprintf("$J=G91 G21 %s%.3f F%.0f", axis, jog.Distance, jog.Feed), nil
+}
+
+// gotoLine turns a target into a jog rather than into a G0.
+//
+// A jog is the safer of the two and by some distance. It never changes the
+// modal state, so it cannot leave the machine in G91 for whatever runs next; it
+// is answered when it is accepted rather than when it arrives, so the pad stays
+// responsive; and it is cancelled by the same Cancel button as any other jog,
+// which a G0 would ignore. The coordinates are in the work coordinate system,
+// which is the one the reading in front of the operator shows.
+func gotoLine(request CommandRequest) (string, error) {
+	line := "$J=G90 G21"
+	for _, axis := range []struct {
+		name  string
+		value *float64
+	}{{"X", request.X}, {"Y", request.Y}, {"Z", request.Z}} {
+		if axis.value == nil {
+			continue
+		}
+		if *axis.value < -10000 || *axis.value > 10000 {
+			return "", errors.New("a target coordinate must be between -10000 and 10000 millimetres")
+		}
+		line += fmt.Sprintf(" %s%.3f", axis.name, *axis.value)
+	}
+	if line == "$J=G90 G21" {
+		return "", errors.New("a go-to needs at least one coordinate")
+	}
+	if request.Feed < 1 || request.Feed > 20000 {
+		return "", errors.New("feed must be between 1 and 20000")
+	}
+	return line + fmt.Sprintf(" F%.0f", request.Feed), nil
+}
+
+// zeroLine sets the work origin for one axis or for all of them.
+//
+// G10 L20 P1 sets the offset of coordinate system 1 - G54, the one a machine
+// powers up in - so that the current position reads as the value given. It is
+// written to the controller's EEPROM and survives a power cycle, which is what
+// makes it worth a button and worth being careful about: this is the only
+// command the steering sends that outlives the session.
+func zeroLine(axis string) (string, error) {
+	switch strings.ToUpper(strings.TrimSpace(axis)) {
+	case "X":
+		return "G10 L20 P1 X0", nil
+	case "Y":
+		return "G10 L20 P1 Y0", nil
+	case "Z":
+		return "G10 L20 P1 Z0", nil
+	case "", "ALL":
+		return "G10 L20 P1 X0 Y0 Z0", nil
+	default:
+		return "", errors.New("an axis to zero must be X, Y, Z or all")
+	}
+}
+
+// typedLine checks a line an operator wrote by hand.
+//
+// This is the one place where the appliance sends something it has not composed
+// itself, and the checks are about what can be expressed rather than about what
+// it means. Deciding whether "G1 X500" is sensible needs to know the machine,
+// the material and the intent, and the appliance knows none of the three - the
+// operator does. What it can insist on is one line, printable, and short enough
+// that it cannot overrun the controller's buffer on its own.
+//
+// The real-time bytes are refused on purpose. They are not lines, they jump the
+// queue, and every one of them already has a button that accounts for it
+// properly - a soft reset typed in here would leave the appliance's own line
+// bookkeeping believing in commands the controller had already forgotten.
+const maxTypedLine = 80
+
+func typedLine(line string) (string, error) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return "", errors.New("nothing to send")
+	}
+	if len(line) > maxTypedLine {
+		return "", fmt.Errorf("a typed command may be at most %d characters", maxTypedLine)
+	}
+	for _, c := range []byte(line) {
+		if c < 0x20 || c > 0x7e {
+			return "", errors.New("a typed command may only contain printable ASCII, and only one line at a time")
+		}
+	}
+	// The soft reset is 0x18 and has already been refused as unprintable; the
+	// other three are printable and have to be named.
+	switch line {
+	case "?", "!", "~":
+		return "", errors.New("the real-time keys have their own buttons: the status is read continuously, and hold, resume and stop are beside the pad")
+	}
+	return line, nil
 }
 
 // outstandingLines is how many injected lines may be waiting for their "ok".
