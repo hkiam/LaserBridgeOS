@@ -43,6 +43,13 @@ chmod 0600 "$ROOT/etc/doas.conf"
 
 chroot "$ROOT" /usr/sbin/addgroup -S laserbridge
 chroot "$ROOT" /usr/sbin/adduser -S -D -H -h /data/home/laserbridge -s /bin/ash -G laserbridge laserbridge
+# busybox syslogd creates /data/log/messages as root:wheel with mode 0640, and
+# recreates it that way after every rotation, so a one-off chmod would not last.
+# The operator has to be able to read the log of the appliance they are the only
+# account on - the same reasoning that leaves dmesg unrestricted (ADR 0008).
+# Membership grants nothing by itself here: doas permits this account by name,
+# and su is irrelevant with root locked.
+chroot "$ROOT" /usr/sbin/addgroup laserbridge wheel
 # Ship a known default password so the appliance is usable over SSH straight
 # away, without a key file. It is the same on every image and therefore only
 # a convenience, never a secret: the setup wizard asks for a new one, and the

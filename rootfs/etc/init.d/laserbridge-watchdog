@@ -19,7 +19,13 @@ error_logger="logger -t laserbridge-watchdog"
 depend() {
 	# Nothing needs this and it needs nothing: the point of a last resort is
 	# that it is up early, stays up, and shares no fate with what it protects.
-	after devfs
+	#
+	# after, not need, for syslog. This service says one thing in its life - the
+	# timeout it negotiated and how often it will pet - and on the first
+	# appliance to run it that line went nowhere, because it had started before
+	# syslogd existed and logger had nothing to write to. Ordering costs
+	# nothing; depending would trade the last resort for a log line.
+	after devfs syslog
 }
 
 start_pre() {
