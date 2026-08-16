@@ -395,6 +395,10 @@ lapses the beam goes out. A closed laptop, a dropped Wi-Fi link or a browser tab
 that crashed all end with the laser off without anyone having to remember. It is
 a dead man's handle, and it is why the beam does not survive the page.
 
+Only one session may hold it. A second browser is refused rather than allowed to
+renew or take over somebody else's beam — the same rule as one client on one
+serial port, one floor up.
+
 **The stop button is not an emergency stop and is not labelled as one.** It
 sends a soft reset: the output goes off whatever `$32` says, the job ends, and a
 connected client is dropped because a controller that has been reset will not
