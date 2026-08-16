@@ -47,6 +47,12 @@ func TestApplyGeneratesRuntimeConfiguration(t *testing.T) {
 			t.Fatalf("unsafe ssh setting %q:\n%s", forbidden, sshd)
 		}
 	}
+	// The conventional path has to be there as well: without it ssh-copy-id
+	// writes to a file sshd never reads, reports success, and the key does not
+	// work - which is how it actually went on a real appliance.
+	if !strings.Contains(string(sshd), "AuthorizedKeysFile /data/ssh/authorized_keys %h/.ssh/authorized_keys") {
+		t.Errorf("sshd would ignore a key installed by ssh-copy-id:\n%s", sshd)
+	}
 	for _, required := range []string{"PasswordAuthentication yes", "AllowUsers laserbridge", "PermitRootLogin no"} {
 		if !strings.Contains(string(sshd), required) {
 			t.Fatalf("sshd config lacks %q:\n%s", required, sshd)
