@@ -744,8 +744,42 @@ func TestDeviceIsPickedUpWhenItComesBack(t *testing.T) {
 	if _, err := client.Write([]byte("$H\n")); err != nil {
 		t.Fatal(err)
 	}
-	if got := mustRead(t, second, 3); string(got) != "$H\n" {
-		t.Fatalf("the new device received %q", got)
+	// Containing rather than equal to, and this is the point of the exercise:
+	// the questions are put to the controller again after a re-open, so this
+	// client waits at the accept gate for a moment - and the appliance's own
+	// status requests are on the wire while it does. What matters is that the
+	// client's line reaches the device that is there now.
+	mustReadContaining(t, second, "$H\n")
+}
+
+// mustReadContaining waits for something to appear in a stream that also
+// carries traffic of its own - the appliance's status polling, mostly.
+func mustReadContaining(t *testing.T, reader io.Reader, needle string) {
+	t.Helper()
+	found := make(chan string, 1)
+	go func() {
+		buffer := make([]byte, 64)
+		seen := ""
+		for {
+			n, err := reader.Read(buffer)
+			seen += string(buffer[:n])
+			if strings.Contains(seen, needle) {
+				found <- seen
+				return
+			}
+			if err != nil {
+				found <- seen
+				return
+			}
+		}
+	}()
+	select {
+	case seen := <-found:
+		if !strings.Contains(seen, needle) {
+			t.Fatalf("the device received %q, which does not contain %q", seen, needle)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the device never received %q", needle)
 	}
 }
 

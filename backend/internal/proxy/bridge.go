@@ -231,8 +231,17 @@ type Bridge struct {
 	// probed is closed once the controller has been asked what it is, or once
 	// it is clear that it cannot be. No client is served before then - see
 	// probeController for why that gate has to exist.
-	probed    chan struct{}
-	probeOnce sync.Once
+	//
+	// It is closed and reopened rather than closed once, because the questions
+	// are asked again every time the port is opened. An adapter that is
+	// replugged is a controller that has been reset, and everything learned
+	// about the old one - the firmware, and $32, on which the whole beam ladder
+	// turns - went with it. Leaving that gap until a client happened to ask was
+	// visible from the workshop as "Controller not identified" beside a machine
+	// that was steering perfectly well.
+	probeMu     sync.Mutex
+	probed      chan struct{}
+	probeClosed bool
 
 	// aim is the lease an operator holds while the aiming beam is on.
 	aim aimingBeam
@@ -337,6 +346,16 @@ func (b *Bridge) recordReport(report grbl.Report, machine grbl.Machine) {
 	case "error":
 		// GRBL replies in order, one per line accepted, so the line this
 		// answered is the oldest one still outstanding.
+		//
+		// It answers for one of ours the same way an "ok" does, and forgetting
+		// that was a real fault: a homing cycle refused with error:9, or any
+		// typed command the controller did not like, left its slot occupied
+		// until the ninety-second timeout. Four of those and the pad still
+		// worked - one line fits in what is left - while the aiming beam,
+		// which needs two lines at once, was refused with "the controller has
+		// not answered the last commands yet". Reported from the workshop,
+		// exactly like that.
+		b.acknowledged()
 		event.Line = b.sent.Acknowledge()
 		event.Context = b.sent.Lines()
 	case "alarm":
@@ -347,8 +366,12 @@ func (b *Bridge) recordReport(report grbl.Report, machine grbl.Machine) {
 		event.Kind = "reset"
 		event.Text = "the controller restarted: " + report.Text
 		// A reset empties the controller's buffer, so every line still
-		// outstanding was answered for by nobody.
+		// outstanding was answered for by nobody. That goes for the
+		// appliance's own lines as much as for the client's: a controller that
+		// restarted - because the adapter was replugged, or because somebody
+		// pressed Stop - is never going to answer them.
 		b.sent.Forget()
+		b.forgetInjected()
 	}
 	b.journal.Add(event)
 	if report.Kind == "alarm" || report.Kind == "error" {
@@ -474,7 +497,7 @@ func (b *Bridge) Run(ctx context.Context, ready chan<- struct{}) error {
 		// b.client is still nil while it arrives.
 		go func(conn net.Conn) {
 			select {
-			case <-b.probed:
+			case <-b.probeGate():
 			case <-time.After(b.probeGrace()):
 			}
 			b.serveClient(conn)
@@ -502,19 +525,18 @@ func (b *Bridge) serveDevice(ctx context.Context, finished chan<- struct{}) {
 			b.closePort()
 			return
 		}
-		// Only ever on the first port this daemon opens, and concurrently with
-		// the read loop below, which is what feeds the observer the answers.
+		// On every port this daemon opens, and concurrently with the read loop
+		// below, which is what feeds the observer the answers.
 		//
-		// Not on a re-open after the adapter came back: the accept gate is a
-		// one-time thing, so by then a client can be served at any moment and a
-		// queued command would land in the middle of its line accounting. The
-		// cost is that a replugged adapter leaves $32 unknown again until a
-		// client asks for it, which is where it was before any of this.
-		select {
-		case <-b.probed:
-		default:
-			go b.probeController(port)
-		}
+		// Including a re-open after the adapter came back, which used not to be
+		// the case: the accept gate was a one-time thing, so by then a client
+		// could be served at any moment and a queued command would have landed
+		// in the middle of its line accounting. The gate closes again instead,
+		// so the argument that makes the first probe safe makes this one safe
+		// too - a connection is accepted at the TCP level and held for a few
+		// seconds with b.client still nil, and the answers reach nobody.
+		b.beginProbe()
+		go b.probeController(port)
 
 		for {
 			n, err := port.Read(buffer)
@@ -578,6 +600,11 @@ func (b *Bridge) openPort(ctx context.Context) *serial.Port {
 			b.mu.Lock()
 			b.devicePath = port.Path()
 			b.portOpenedAt = time.Now()
+			// "open /dev/ttyUSB0: no such file or directory" is true while it
+			// is true and misleading afterwards. It was still on the page
+			// underneath a machine that was answering, which is the kind of
+			// thing that makes somebody distrust the whole reading.
+			b.lastError = ""
 			b.mu.Unlock()
 			b.logf("serial port %s open at %d baud", port.Path(), b.config.Baudrate)
 			b.note("device", "opened "+port.Path()+" at "+strconv.Itoa(b.config.Baudrate)+" baud")
