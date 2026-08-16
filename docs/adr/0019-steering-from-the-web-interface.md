@@ -62,6 +62,14 @@ built for - the operator holds a three-second lease that the page renews every
 second. While it is held, the beam counts as attended. When it lapses, the beam
 is switched off and the watchdog is watching again.
 
+> Corrected in the field, 2026-08-16: the beam was switched on with a single
+> `M3 S…`, which a controller accepts, acknowledges and reports as a spindle
+> that is on - while staying dark. In laser mode GRBL applies a block's
+> programmed power only if that block's modal motion is `G1`, `G2` or `G3`, and
+> after a reset it is `G0`. It now sends `M3` and then `G1 F100 S…`, which is
+> what LightBurn's fire button sends and what GRBL's own laser-mode
+> documentation describes. Nothing about the lease changes.
+
 The lease is a dead man's handle, and it is the right shape for the hazard: a
 closed laptop, a dropped Wi-Fi link, a browser tab that crashed, a page left on
 a phone in a pocket - all of them end with the beam out, without anyone having

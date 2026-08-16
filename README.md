@@ -431,6 +431,25 @@ interface has no login, and adding one would mean typing the appliance password
 - Except **Stop**, which ends the conflict rather than joining it: it takes the
   machine over the way the watchdog does, telling the client and dropping it.
 
+**The aiming beam is two lines, and it has to be.** `M3` on its own does not
+light a laser in laser mode: GRBL applies the power a block programs only if
+that block's modal motion is `G1`, `G2` or `G3` — *"a `G0 M3 S1000` will not
+turn on the laser, but will set the laser modal state to `M3` enabled and power
+of `S1000`. A following `G1` command will then immediately be set to `M3` and
+`S1000`"* — and after a reset the modal motion is `G0`. So the appliance sends
+what LightBurn's own fire button sends:
+
+```gcode
+M3
+G1 F100 S20
+```
+
+No axis words, so nothing moves; the `G1` is there to put the parser where the
+power can reach the output. `M3` rather than the `M4` recommended for cutting,
+because `M4` is dynamic power and switches the beam off whenever the machine is
+not moving — which is all of what aiming is. It leaves the parser in `G1` at
+100 mm/min, the same thing any sender's fire button leaves behind.
+
 **The aiming beam is held, not switched on.** The page renews a three-second
 lease every second; while it is held the beam counts as attended, and when it
 lapses the beam goes out. A closed laptop, a dropped Wi-Fi link or a browser tab
