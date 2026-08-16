@@ -66,13 +66,19 @@ type jobTracker struct {
 // sentence for the record when a job has just ended, and the empty string
 // otherwise - the caller writes it, so that no lock of this package's is held
 // while the journal takes its own.
-func (t *jobTracker) observe(machine grbl.Machine, lines, bytes uint64, now time.Time, uptime int64) string {
+func (t *jobTracker) observe(machine grbl.Machine, clientConnected bool, lines, bytes uint64, now time.Time, uptime int64) string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	moving := machine.State.Moving()
 
 	if !t.job.Running {
-		if !moving {
+		// A job is a client's work. Without one there is somebody at the jog
+		// pad, and MachineState.Moving() is true for Jog and Home as well as
+		// Run - so without this every tap on an arrow key started a "job",
+		// wrote a line into the record saying it had finished after three
+		// seconds and no lines, and blocked updates and reboots for fifteen
+		// seconds afterwards.
+		if !moving || !clientConnected {
 			return ""
 		}
 		t.job = Job{

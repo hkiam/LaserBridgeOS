@@ -619,11 +619,30 @@ let aimTimer = null;
 
 function updateSteering(bridge) {
   const client = bridge.client || '';
+  const machine = bridge.machine || {};
   const blocked = $('#control-blocked');
   const badge = $('#control-badge');
+
+  // A machine takes time. A jog is answered when the controller accepts it, not
+  // when the move is over, so the pad stays usable while the axes are still
+  // running - but the page has to say that they are, and offer the way to stop
+  // them that does not end the whole session.
+  const moving = ['Run', 'Jog', 'Home'].includes(machine.state);
+  $('#jog-cancel').hidden = !moving;
+  setText('#jog-state', moving ? `${machine.state} — still moving` : '');
+
+  // Homing is only offered where there is a homing cycle to run. Without $22
+  // the controller answers error:5 and the operator gets a bare error code.
+  const home = $('[data-command="home"]');
+  home.title = machine.homing === 'off'
+    ? 'This controller has no homing cycle configured ($22=0)'
+    : 'Run the homing cycle';
+  home.dataset.unavailable = machine.homing === 'off' ? 'yes' : '';
   // Stop is deliberately not disabled: it is the one command that ends the
   // conflict rather than joining it.
-  $$('#control-card .button.jog, #control-card .button.control').forEach(b => { b.disabled = Boolean(client); });
+  $$('#control-card .button.jog, #control-card .button.control').forEach(b => {
+    b.disabled = Boolean(client) || b.dataset.unavailable === 'yes';
+  });
   $('#aim-on').disabled = Boolean(client);
   if (client) {
     badge.textContent = 'CLIENT IN CHARGE';
@@ -699,9 +718,21 @@ $('#control-stop').addEventListener('click', async () => {
 });
 
 // A page that goes away releases the beam at once rather than waiting for the
-// lease to run out. Best effort: if it does not arrive, the lease covers it.
+// lease to run out. Best effort: if it does not arrive, the lease covers it in
+// three seconds.
+//
+// Not sendBeacon, which was the obvious choice and is the wrong one: it cannot
+// set headers, so the request arrives without the CSRF token and is refused.
+// It looked like a safety feature and was a 403 every time. fetch with keepalive
+// carries the header and still outlives the page.
 window.addEventListener('pagehide', () => {
-  if (aimTimer) navigator.sendBeacon?.('/api/grbl/control/aim-off');
+  if (!aimTimer) return;
+  fetch('/api/grbl/control/aim-off', {
+    method: 'POST',
+    headers: {'X-CSRF-Token': csrfToken, 'Content-Type': 'application/json'},
+    body: '{}',
+    keepalive: true
+  }).catch(() => {});
 });
 
 async function start() {

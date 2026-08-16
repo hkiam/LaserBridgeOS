@@ -117,7 +117,7 @@ func (s *StatusSocket) answer(conn net.Conn) {
 			return
 		}
 		answer := CommandAnswer{}
-		if err := s.bridge.Do(request.Command, Jog{Axis: request.Axis, Distance: request.Distance, Feed: request.Feed}, request.Percent); err != nil {
+		if err := s.bridge.Do(request.Command, Jog{Axis: request.Axis, Distance: request.Distance, Feed: request.Feed}, request.Percent, request.Holder); err != nil {
 			answer.Error = err.Error()
 		}
 		_ = encoder.Encode(answer)
@@ -176,6 +176,9 @@ type CommandRequest struct {
 	Distance float64 `json:"distance,omitempty"`
 	Feed     float64 `json:"feed,omitempty"`
 	Percent  int     `json:"percent,omitempty"`
+	// Holder identifies who is asking - a browser session, not a person. It
+	// decides who may hold the aiming beam and it goes into the record.
+	Holder string `json:"holder,omitempty"`
 }
 
 type CommandAnswer struct {

@@ -15,7 +15,7 @@ func TestTheApplianceWillNotSteerAMachineSomebodyElseIsSteering(t *testing.T) {
 	defer client.Close()
 
 	for _, command := range []Command{CommandHome, CommandUnlock, CommandJog, CommandAim, CommandHold} {
-		err := bridge.Do(command, Jog{Axis: "X", Distance: 10, Feed: 1000}, 2)
+		err := bridge.Do(command, Jog{Axis: "X", Distance: 10, Feed: 1000}, 2, "test-holder")
 		if err == nil {
 			t.Fatalf("%s was accepted while a client was connected", command)
 		}
@@ -38,7 +38,7 @@ func TestStopIsTheOneCommandAllowedWhileSomebodyIsSteering(t *testing.T) {
 	})
 	defer client.Close()
 
-	if err := bridge.Do(CommandStop, Jog{}, 0); err != nil {
+	if err := bridge.Do(CommandStop, Jog{}, 0, "test-holder"); err != nil {
 		t.Fatalf("Stop was refused: %v", err)
 	}
 	waitForCounts(t, sim, 0, 0, 1)
@@ -63,7 +63,7 @@ func TestAJogIsRelativeAndInMillimetresEveryTime(t *testing.T) {
 	controller, _, bridge := startBridgeWith(t, func(c *Config) {})
 	waitFor(t, func() bool { return bridge.Status().Device != "" }, "the port to open")
 
-	if err := bridge.Do(CommandJog, Jog{Axis: "y", Distance: -2.5, Feed: 800}, 0); err != nil {
+	if err := bridge.Do(CommandJog, Jog{Axis: "y", Distance: -2.5, Feed: 800}, 0, "test-holder"); err != nil {
 		t.Fatal(err)
 	}
 	got := string(mustRead(t, controller, len("$J=G91 G21 Y-2.500 F800\n")))
@@ -79,7 +79,7 @@ func TestAJogIsRelativeAndInMillimetresEveryTime(t *testing.T) {
 		{Axis: "X", Distance: 5000, Feed: 100},
 		{Axis: "X", Distance: 1, Feed: 0},
 	} {
-		if err := bridge.Do(CommandJog, bad, 0); err == nil {
+		if err := bridge.Do(CommandJog, bad, 0, "test-holder"); err == nil {
 			t.Errorf("%+v was accepted", bad)
 		}
 	}
@@ -101,7 +101,7 @@ func TestTheAimingBeamIsHeldOnALease(t *testing.T) {
 	t.Cleanup(func() { close(done) })
 	waitFor(t, func() bool { return bridge.Status().Device != "" }, "the port to open")
 
-	if err := bridge.Do(CommandAim, Jog{}, 2); err != nil {
+	if err := bridge.Do(CommandAim, Jog{}, 2, "test-holder"); err != nil {
 		t.Fatal(err)
 	}
 	if !bridge.Aiming() {
@@ -112,7 +112,7 @@ func TestTheAimingBeamIsHeldOnALease(t *testing.T) {
 	sim.set("Idle", true)
 	for i := 0; i < 8; i++ {
 		time.Sleep(200 * time.Millisecond)
-		if err := bridge.Do(CommandAim, Jog{}, 2); err != nil {
+		if err := bridge.Do(CommandAim, Jog{}, 2, "test-holder"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -139,7 +139,7 @@ func TestTheAimingBeamIsHeldOnALease(t *testing.T) {
 
 func TestSteeringNeedsAPort(t *testing.T) {
 	bridge := New(Config{Device: "/dev/does-not-exist", Baudrate: 115200, Port: 0}, nil)
-	if err := bridge.Do(CommandHome, Jog{}, 0); err != ErrNoPort {
+	if err := bridge.Do(CommandHome, Jog{}, 0, "test-holder"); err != ErrNoPort {
 		t.Fatalf("err = %v, want ErrNoPort", err)
 	}
 	_ = net.Dial // keep the import honest for the helpers above

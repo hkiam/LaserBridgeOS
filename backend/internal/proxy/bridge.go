@@ -160,6 +160,23 @@ type Status struct {
 }
 
 // Bridge is the running proxy.
+//
+// Four mutexes and several goroutines, so the order they may be taken in is
+// written down here rather than left to be rediscovered:
+//
+//	interveneMu -> clientMu -> portMu
+//	interveneMu -> mu
+//
+// mu, clientMu and portMu are never held while calling into the observer, the
+// journal, the monitors or the job tracker - each of those has its own lock and
+// takes nothing else - which is what keeps the graph a tree. Anything that
+// needs to write a journal entry from inside a locked section builds the
+// sentence there and writes it after unlocking; jobTracker.observe returns a
+// string for exactly that reason.
+//
+// The race detector runs over the whole suite in "make race" and in CI. It was
+// clean the first time it was ever run, which is reassuring and not the same as
+// a guarantee.
 type Bridge struct {
 	config Config
 	logger *log.Logger
@@ -216,6 +233,11 @@ type Bridge struct {
 
 	// aim is the lease an operator holds while the aiming beam is on.
 	aim aimingBeam
+	// injected holds one entry per line this appliance has sent that the
+	// controller has not answered with "ok" yet, and when it was sent. It is
+	// the appliance keeping the same books for itself that it insists a client
+	// keeps for its own stream.
+	injected chan time.Time
 	// jobs is the appliance's notion of the work in front of the machine, as
 	// opposed to what the machine is doing this instant.
 	jobs jobTracker
@@ -267,6 +289,7 @@ func New(config Config, logger *log.Logger) *Bridge {
 		config:   config,
 		logger:   logger,
 		probed:   make(chan struct{}),
+		injected: make(chan time.Time, outstandingLines),
 		state:    StateStopped,
 		observer: grbl.NewObserver(),
 		journal:  NewJournal(config.JournalPath),
@@ -302,7 +325,9 @@ func (b *Bridge) recordReport(report grbl.Report, machine grbl.Machine) {
 		return
 	case "ok":
 		// Not worth recording, but it answers for a line, and the count is
-		// what makes the next error attributable.
+		// what makes the next error attributable. It may also be answering one
+		// of ours - a jog, a home - in which case it releases that slot.
+		b.acknowledged()
 		b.sent.Acknowledge()
 		return
 	case "error":

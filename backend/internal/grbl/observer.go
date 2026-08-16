@@ -137,6 +137,13 @@ type Machine struct {
 	Options  string `json:"options,omitempty"`
 	// SpindleMax is $30, what an S value of full power is on this controller.
 	SpindleMax int `json:"spindle_max,omitempty"`
+	// Homing is $22, SoftLimits $20 and HardLimits $21. They decide what the
+	// steering may honestly offer: a Home button on a machine with no homing
+	// cycle answers error:5, and a jog on a machine with no limits at all is
+	// bounded by nothing but the rails.
+	Homing     Setting `json:"homing,omitempty"`
+	SoftLimits Setting `json:"soft_limits,omitempty"`
+	HardLimits Setting `json:"hard_limits,omitempty"`
 }
 
 func NewObserver() *Observer {
@@ -248,6 +255,14 @@ func (o *Observer) apply(report Report) {
 				o.machine.SpindleMax = value
 			}
 		}
+		switch report.Setting {
+		case HomingCycle:
+			o.machine.Homing = onOff(report.SettingValue)
+		case SoftLimits:
+			o.machine.SoftLimits = onOff(report.SettingValue)
+		case HardLimits:
+			o.machine.HardLimits = onOff(report.SettingValue)
+		}
 		if report.Setting == LaserMode {
 			if strings.TrimSpace(report.SettingValue) == "0" {
 				o.machine.LaserMode = SettingOff
@@ -293,8 +308,20 @@ func (o *Observer) apply(report Report) {
 			Firmware:   o.machine.Firmware,
 			Options:    o.machine.Options,
 			SpindleMax: o.machine.SpindleMax,
+			Homing:     o.machine.Homing,
+			SoftLimits: o.machine.SoftLimits,
+			HardLimits: o.machine.HardLimits,
 		}
 	}
+}
+
+// onOff reads one of GRBL's boolean settings. Anything that is not zero is on,
+// which is how GRBL itself treats them.
+func onOff(value string) Setting {
+	if strings.TrimSpace(value) == "0" {
+		return SettingOff
+	}
+	return SettingOn
 }
 
 // Machine returns the current reading.

@@ -1,6 +1,8 @@
 package api
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -25,6 +27,22 @@ import (
 //     that goes away takes the beam with it.
 //
 // Same-origin and CSRF are enforced by the mutation wrapper, as everywhere else.
+// holderOf names the browser session that is asking, without handing its
+// secret to anybody.
+//
+// The CSRF cookie already identifies a session; hashing it gives something
+// stable enough to hold a lease and to name in the record, while the token
+// itself never leaves this process. Without a cookie there is no session and no
+// lease can be held - which the mutation wrapper has already refused by then.
+func holderOf(r *http.Request) string {
+	cookie, err := r.Cookie(csrfCookie)
+	if err != nil || cookie.Value == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(cookie.Value))
+	return "session " + hex.EncodeToString(sum[:4])
+}
+
 type controlRequest struct {
 	Axis     string  `json:"axis,omitempty"`
 	Distance float64 `json:"distance,omitempty"`
@@ -62,6 +80,7 @@ func (s *Server) grblControl(w http.ResponseWriter, r *http.Request) {
 		Distance: request.Distance,
 		Feed:     request.Feed,
 		Percent:  request.Percent,
+		Holder:   holderOf(r),
 	})
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "the bridge did not answer: "+err.Error())
@@ -82,6 +101,10 @@ func (s *Server) grblControl(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusNotFound
 		case strings.Contains(answer.Error, "only accepted from root"):
 			status = http.StatusForbidden
+		case strings.Contains(answer.Error, "somebody else is holding"):
+			status = http.StatusConflict
+		case strings.Contains(answer.Error, "has not answered the last"):
+			status = http.StatusTooManyRequests
 		}
 		writeError(w, status, answer.Error)
 		return

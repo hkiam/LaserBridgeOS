@@ -147,6 +147,16 @@ func Parse(line string) Report {
 // whether a feed hold switches the beam off.
 const LaserMode = "$32"
 
+// The settings that decide what the steering may offer. $22 says whether there
+// is a homing cycle to run at all - offering the button on a machine without
+// one produces error:5 and a puzzled operator - and $20/$21 say whether
+// anything bounds a jog besides the rails.
+const (
+	HomingCycle = "$22"
+	SoftLimits  = "$20"
+	HardLimits  = "$21"
+)
+
 // SpindleMax is GRBL's maximum spindle speed. It is what a percentage of laser
 // power is a percentage of, and assuming GRBL's default of 1000 when the
 // controller says otherwise would aim with the wrong power.
