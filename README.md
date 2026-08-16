@@ -312,6 +312,21 @@ better path wherever a second machine can reach this one. See ADR 0007.
 
 ![The update card: which slot is running, which is staged](docs/images/system-update.jpg)
 
+The System page shows three different facts, which is one more than it used to:
+what is **running now**, what **the other slot** holds — that is what a rollback
+would boot into — and which slot the **next boot** will take. The middle one was
+missing and the third was misleading: it reported the last installation whether
+or not that installation had already booted, so an appliance running the update
+it installed an hour ago showed the same version twice and looked as though
+something were still pending.
+
+A slot's version lives inside its own read-only filesystem, which is not mounted
+while it is the inactive one. Rather than mount a squashfs on every status
+request, the appliance writes down what each slot holds at the two moments when
+it knows for free: when an update is written into a slot, and when a boot is
+confirmed. On an appliance that has not been updated since this was added, the
+other slot simply reads *version not recorded yet* until it is.
+
 The appliance verifies the OpenSSH signature and every payload checksum,
 writes only the inactive root slot, and changes the next boot slot last. The
 current configuration and SSH keys under `/data` are retained. Reboot after a

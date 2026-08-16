@@ -319,8 +319,9 @@
         <article class="card update-card">
           <div class="card-head"><h2>A/B system update</h2><span class="badge" id="update-badge">CHECKING</span></div>
           <dl class="update-status">
-            <div><dt>Running</dt><dd><span id="update-version">—</span> · slot <span id="update-current-slot">—</span></dd></div>
-            <div><dt>Staged</dt><dd id="update-staged">None</dd></div>
+            <div><dt>Running now</dt><dd><span id="update-version">—</span> · slot <span id="update-current-slot">—</span></dd></div>
+            <div><dt>The other slot</dt><dd id="update-previous">—</dd></div>
+            <div><dt>Next boot</dt><dd id="update-staged">—</dd></div>
           </dl>
           <p class="muted update-copy">Updates are written to the inactive immutable slot. Sign the bundle with the private SSH key authorized for this appliance before uploading it:</p>
           <pre class="command">ssh-keygen -Y sign -f laserbridge_ed25519 -n laserbridge-update LaserBridgeOS-x86_64-VERSION.lbu</pre>

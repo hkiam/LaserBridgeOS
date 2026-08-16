@@ -233,11 +233,74 @@ func TestConfirmBootAdoptsSlotAfterGrubFellBack(t *testing.T) {
 	if string(active) != "set laserbridge_slot=a\n" {
 		t.Fatalf("active slot = %q, want the recovered slot a", active)
 	}
-	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
-		t.Fatalf("update that failed to boot is still staged: %v", err)
+	// The record stays, without the target: an update that could not boot must
+	// not be asked for again, but what the slots hold is worth keeping - it is
+	// what the interface shows next to "boot previous slot".
+	var state State
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("the record of what the slots hold was thrown away: %v", err)
+	}
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.TargetSlot != "" {
+		t.Fatalf("the update that could not boot is still staged: %+v", state)
+	}
+	if state.Slots["a"] != "0.1.0" {
+		t.Errorf("the running slot was not recorded: %+v", state.Slots)
 	}
 	if status := manager.Status(); status.RebootRequired {
 		t.Fatalf("status still asks for a reboot into the broken slot: %#v", status)
+	}
+}
+
+// The question this answers came from the workshop: why does the page show the
+// same version as running and as staged?
+//
+// Because "staged" described the last installation rather than a pending one.
+// An appliance that installed 0.1.7 into slot B and rebooted into it is running
+// 0.1.7 in slot B, and there is nothing waiting for anybody.
+func TestAnInstallationThatHasBootedIsNotStaged(t *testing.T) {
+	manager, _, _, _ := testManager(t, &fakeVerifier{})
+	statePath := filepath.Join(manager.DataDir, "update", "state.json")
+	if err := os.MkdirAll(filepath.Dir(statePath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Installed into a, and a is what is running.
+	if err := os.WriteFile(statePath, []byte(`{"version":"0.2.0","target_slot":"a","slots":{"a":"0.2.0","b":"0.1.9"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	status := manager.Status()
+	if status.RebootRequired {
+		t.Error("a reboot is asked for although the installation has already booted")
+	}
+	if status.StagedVersion != "" || status.StagedSlot != "" {
+		t.Errorf("staged = %q in slot %q, want nothing pending", status.StagedVersion, status.StagedSlot)
+	}
+	// And the question behind the question: what would a rollback boot into?
+	if status.PreviousVersion != "0.1.9" {
+		t.Errorf("previous slot holds %q, want 0.1.9", status.PreviousVersion)
+	}
+}
+
+func TestARollbackNamesTheVersionItWouldBootInto(t *testing.T) {
+	manager, _, _, _ := testManager(t, &fakeVerifier{})
+	statePath := filepath.Join(manager.DataDir, "update", "state.json")
+	if err := os.MkdirAll(filepath.Dir(statePath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, []byte(`{"version":"previous-slot","target_slot":"b","slots":{"a":"0.2.0","b":"0.1.9"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	status := manager.Status()
+	if !status.RebootRequired || status.StagedSlot != "b" {
+		t.Fatalf("status = %#v, want a pending switch to slot b", status)
+	}
+	// "previous-slot" is what the record holds, because a rollback carries no
+	// bundle. It is not what anybody wants to read on a page.
+	if status.StagedVersion != "0.1.9" {
+		t.Errorf("staged version = %q, want the version that is actually over there", status.StagedVersion)
 	}
 }
 

@@ -88,7 +88,7 @@ label.toggle input { width: 17px; height: 17px; accent-color: var(--accent); }
 .security-note { max-width: 900px; margin-top: 16px; }
 .security-note p { color: var(--muted); font-size: 13px; line-height: 1.65; margin-bottom: 0; }
 .update-card { max-width: 900px; margin-top: 16px; }
-.update-status { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin: 0 0 20px; }
+.update-status { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin: 0 0 20px; }
 .update-copy { line-height: 1.6; }
 .command { padding: 12px; border: 1px solid var(--line); border-radius: 6px; background: #070a0e; color: #b9c9d9; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.5 monospace; }
 .log-card { padding: 14px 20px; background: #070a0e; }
