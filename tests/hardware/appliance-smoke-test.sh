@@ -208,6 +208,24 @@ else
 	bad "the record does not name the controller: the opening questions never got an answer"
 fi
 
+say "The console records only while somebody is reading"
+# Two asks a second apart. The first starts the recording and returns nothing,
+# because nothing was being kept when the traffic went past; the second says it
+# is recording. That is the whole contract, and it is the part that cannot be
+# checked without a real controller talking on a real port.
+first=$(api "grbl/console?after=0" || true)
+case "$first" in
+	*'"available":false'*)
+		note "laserbridged is not carrying the port; nothing to record" ;;
+	*)
+		sleep 2
+		second=$(api "grbl/console?after=0" || true)
+		case "$second" in
+			*'"recording":true'*) ok "the transcript is kept for a reader that keeps asking" ;;
+			*) bad "the second ask did not report a recording transcript: $second" ;;
+		esac ;;
+esac
+
 say "A stale save is refused"
 # Two tabs, or a tab and somebody at the SSH prompt. Only the rejected write is
 # attempted here, so nothing is changed either way.
