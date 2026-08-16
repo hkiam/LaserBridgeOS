@@ -168,7 +168,7 @@ type Status struct {
 //	interveneMu -> mu
 //
 // mu, clientMu and portMu are never held while calling into the observer, the
-// journal, the monitors or the job tracker - each of those has its own lock and
+// journal, the monitors, the console or the job tracker - each of those has its own lock and
 // takes nothing else - which is what keeps the graph a tree. Anything that
 // needs to write a journal entry from inside a locked section builds the
 // sentence there and writes it after unlocking; jobTracker.observe returns a
@@ -214,6 +214,9 @@ type Bridge struct {
 	journal  *Journal
 	sent     *lineTail
 	monitors *monitors
+	// console is the same transcript the monitor port serves, kept in a ring
+	// for the web interface while somebody is looking at it.
+	console *console
 
 	// interveneMu makes sure only one thing is commanding the machine at a
 	// time. The disconnect handler and the beam watchdog can both decide to
@@ -294,8 +297,9 @@ func New(config Config, logger *log.Logger) *Bridge {
 		observer: grbl.NewObserver(),
 		journal:  NewJournal(config.JournalPath),
 		sent:     newLineTail(),
-		monitors: newMonitors(config.ClientWriteTimeout),
+		console:  newConsole(),
 	}
+	bridge.monitors = newMonitors(config.ClientWriteTimeout, bridge.console)
 	bridge.observer.OnReport = bridge.recordReport
 	return bridge
 }

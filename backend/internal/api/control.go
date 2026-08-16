@@ -44,10 +44,14 @@ func holderOf(r *http.Request) string {
 }
 
 type controlRequest struct {
-	Axis     string  `json:"axis,omitempty"`
-	Distance float64 `json:"distance,omitempty"`
-	Feed     float64 `json:"feed,omitempty"`
-	Percent  int     `json:"percent,omitempty"`
+	Axis     string   `json:"axis,omitempty"`
+	Distance float64  `json:"distance,omitempty"`
+	Feed     float64  `json:"feed,omitempty"`
+	Percent  int      `json:"percent,omitempty"`
+	X        *float64 `json:"x,omitempty"`
+	Y        *float64 `json:"y,omitempty"`
+	Z        *float64 `json:"z,omitempty"`
+	Line     string   `json:"line,omitempty"`
 }
 
 func (s *Server) grblControl(w http.ResponseWriter, r *http.Request) {
@@ -79,7 +83,11 @@ func (s *Server) grblControl(w http.ResponseWriter, r *http.Request) {
 		Axis:     request.Axis,
 		Distance: request.Distance,
 		Feed:     request.Feed,
+		X:        request.X,
+		Y:        request.Y,
+		Z:        request.Z,
 		Percent:  request.Percent,
+		Line:     request.Line,
 		Holder:   holderOf(r),
 	})
 	if err != nil {

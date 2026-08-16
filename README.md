@@ -373,9 +373,24 @@ is not an open question. Otherwise it records that it could not confirm.
 
 ### Steering from the web interface
 
-The Machine page shows what the machine is doing and can drive it: a jog pad
-with a step size, homing and unlock, feed hold and resume, a low-power beam for
-aiming, and a stop.
+The Machine page is everything about the machine in one place: the readout, the
+steering, the camera image and the console, with the record and the bridge
+settings folded away underneath it.
+
+It shows where the head is in **work coordinates**, large, with machine
+coordinates underneath in small type — the operator sets the work zero and works
+to it, and the machine coordinates are what the limits and the record are in.
+GRBL sends one system and the offset between them, the offset only every tenth
+report or so; the appliance remembers it and derives the other. Each axis has a
+Zero button (`G10 L20 P1`), which is the only steering command that outlives the
+session: it is written to the controller's EEPROM.
+
+It can drive the machine: a jog pad with a step size, homing and unlock, feed
+hold and resume, a low-power beam for aiming, a stop — and a go-to, typed as
+coordinates. A go-to is sent as `$J=G90 G21 X… Y… F…` rather than as a `G0`,
+because a jog never changes the modal state, is answered when it is accepted
+rather than when the move ends, and is cancelled by the same Cancel jog button
+as any other jog. An axis left blank stays where it is.
 
 It is bounded by what it will not do rather than by who is asking — the
 interface has no login, and adding one would mean typing the appliance password
@@ -404,6 +419,31 @@ sends a soft reset: the output goes off whatever `$32` says, the job ends, and a
 connected client is dropped because a controller that has been reset will not
 finish what it was sent. But it needs this appliance running, the network, the
 cable and the controller answering. Use the machine's own stop. See ADR 0019.
+
+### The console
+
+The monitor port has carried the marked transcript since ADR 0012, for whoever
+knows to run `nc laserbridge 23000`. The same thing is on the Machine page now:
+
+```
+> $J=G91 G21 X10.000 F1000     what the client sent
+< ok                           what the controller answered
+* $$                           what the appliance sent itself
+```
+
+Filterable by mark and by text, with a box to type one command into. What can be
+typed is bounded by what can be expressed, not by what it means: one printable
+line, at most eighty characters, and subject to every guard above — nothing
+while a client is connected, nothing at all under ser2net. `?`, `!` and `~` are
+real-time keys and are refused there; they have buttons that account for them
+properly.
+
+It is only recorded while somebody is looking at it. The transcript is assembled
+in the goroutines carrying bytes between the client and the machine, so a reader
+holds a lease that polling renews and a closed tab drops in fifteen seconds. Four
+hundred lines are kept, and a reader who falls behind is told how many fell out
+rather than shown a transcript with an invisible hole in it. The console is not
+the record — the journal below is, and it is on disk.
 
 ### The laser may not be on while nothing moves
 
@@ -501,7 +541,9 @@ Status reports are not recorded; there are several a second during a job and
 they would bury the three lines that matter. Routine client connects and
 disconnects stay in memory only, for the same reason; when the bridge drops a
 client itself, that is recorded as an intervention, because it is one.
-`GET /api/grbl/journal` and the GRBL Bridge page show the same thing.
+`GET /api/grbl/journal` shows the same thing, as does the Machine page: the
+last few entries fold out on it, and a button opens the whole record in a window
+of its own to leave open beside the machine.
 
 ### What counts as a job
 

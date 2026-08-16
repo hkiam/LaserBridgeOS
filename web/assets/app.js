@@ -99,10 +99,16 @@ async function loadStatus() {
     $$('.service-action[data-grbl]').forEach(button => { button.dataset.service = backend; });
     badge('#ustreamer-badge', status.services.ustreamer);
     renderServices(status.services);
-    const preview = $('#camera-preview');
-    if (status.services.ustreamer && preview.dataset.src !== status.config.camera_stream_url) {
-      preview.dataset.src = status.config.camera_stream_url;
-      preview.src = status.config.camera_stream_url;
+    badge('#machine-camera-badge', status.services.ustreamer);
+    // The same stream is shown on the dashboard and beside the steering, and
+    // reassigning src restarts the connection - so it is only set when it
+    // actually changed.
+    if (status.services.ustreamer) {
+      $$('.camera-stream').forEach(image => {
+        if (image.dataset.src === status.config.camera_stream_url) return;
+        image.dataset.src = status.config.camera_stream_url;
+        image.src = status.config.camera_stream_url;
+      });
     }
   } catch (error) {
     $('#overall-dot').className = 'dot offline';
@@ -124,24 +130,22 @@ function renderServices(services) {
 }
 
 async function loadMachine() {
-  const card = $('#machine-card');
+  const workspace = $('#machine-workspace');
   const fallbackNote = $('#ser2net-note');
   let answer;
   try {
     answer = await request('/api/grbl');
   } catch (error) {
-    card.hidden = true;
+    workspace.hidden = true;
     fallbackNote.hidden = true;
-    $('#control-card').hidden = true;
     return;
   }
   // With ser2net in charge there is nothing to ask. Hiding the card and saying
   // nothing was the old behaviour, and an absence is not a statement: somebody
   // who switched backends a month ago has nothing left to remind them that the
   // beam watchdog went with it. So the panel says what is not being watched.
-  card.hidden = !answer.available;
+  workspace.hidden = !answer.available;
   fallbackNote.hidden = answer.available;
-  $('#control-card').hidden = !answer.available;
   $('#journal-unavailable').hidden = answer.available;
   if (!answer.available) return;
 
@@ -154,9 +158,7 @@ async function loadMachine() {
 
   setText('#machine-bridge-state', bridge.state);
   setText('#machine-client', bridge.client || 'none');
-  setText('#machine-position', machine.has_position
-    ? `X ${machine.position.x.toFixed(2)}  Y ${machine.position.y.toFixed(2)}  Z ${machine.position.z.toFixed(2)}`
-    : '—');
+  updateReadout(machine);
   setText('#machine-feed', machine.state ? `${machine.feed || 0} mm/min · ${machine.spindle || 0}` : '—');
   setText('#machine-bytes', `${bytes(bridge.rx_bytes)} in · ${bytes(bridge.tx_bytes)} out`);
   setText('#machine-beam', beamText(machine));
@@ -183,8 +185,15 @@ async function loadMachine() {
         : bridge.last_intervention || bridge.last_error || '';
   note.textContent = text;
   note.hidden = !text;
+
+  // The workspace may have just appeared - a backend switched, a daemon that
+  // came back - and the console follows it rather than the panel alone.
+  updateConsolePolling();
 }
 
+// The record is read in two places, which is the point: the last few lines
+// belong beside the machine an operator is standing at, and the whole thing
+// belongs in a window of its own that can be left open next to it.
 async function loadJournal() {
   const card = $('#journal-card');
   let answer;
@@ -195,16 +204,19 @@ async function loadJournal() {
     return;
   }
   card.hidden = !answer.available;
+  $('#machine-record').hidden = !answer.available;
   if (!answer.available) return;
 
   const events = answer.events || [];
   if (!events.length) {
-    $('#journal').replaceChildren(Object.assign(document.createElement('p'), {
-      className: 'muted', textContent: 'Nothing has gone wrong yet.'}));
+    const nothing = () => Object.assign(document.createElement('p'), {
+      className: 'muted', textContent: 'Nothing has gone wrong yet.'});
+    $('#journal').replaceChildren(nothing());
+    $('#machine-journal').replaceChildren(nothing());
     return;
   }
   // Newest first on screen, oldest first in the record.
-  $('#journal').replaceChildren(...events.slice().reverse().map(event => {
+  const rows = events.slice().reverse().map(event => {
     const row = document.createElement('div');
     row.className = `journal-row journal-${event.kind}`;
 
@@ -241,7 +253,36 @@ async function loadJournal() {
       row.append(context);
     }
     return row;
-  }));
+  });
+  $('#journal').replaceChildren(...rows);
+  // Beside the machine, only what has just happened - a page an operator uses
+  // while standing at a laser should not open onto fifty rows of history.
+  $('#machine-journal').replaceChildren(...rows.slice(0, 8).map(row => row.cloneNode(true)));
+  setText('#machine-record-count', `${events.length} entries`);
+}
+
+// The readout, which is where an operator looks first.
+//
+// Work coordinates are large and machine coordinates are small underneath, in
+// that order and not the other way round: the operator set the work zero, works
+// to it, and types go-to targets in it. The machine coordinates still have to
+// be there - they are what the limits and the record are in - but they are a
+// reference, not the reading.
+//
+// GRBL sends one coordinate system and the offset between them, the offset only
+// every tenth report or so; the appliance remembers it and derives the other,
+// which is why both can be shown from a report that carried one.
+function updateReadout(machine) {
+  const known = machine.has_position;
+  const work = machine.work || {};
+  const absolute = machine.position || {};
+  for (const axis of ['x', 'y', 'z']) {
+    setText(`#dro-${axis}`, known ? work[axis].toFixed(3) : '—');
+    setText(`#dro-m${axis}`, known ? `machine ${absolute[axis].toFixed(3)}` : 'machine —');
+  }
+  setText('#dro-note', machine.has_offset
+    ? 'work coordinates · G54 offset known'
+    : 'work coordinates');
 }
 
 // What the controller said about its output, and when it said it.
@@ -387,8 +428,13 @@ async function saveConfig(message) {
   await loadStatus();
 }
 
-$('#journal-refresh').addEventListener('click', async () => {
-  try { await loadJournal(); } catch (error) { toast(error.message, true); }
+$$('#journal-refresh, #journal-refresh-panel').forEach(button => {
+  button.addEventListener('click', async () => {
+    try { await loadJournal(); } catch (error) { toast(error.message, true); }
+  });
+});
+$('#journal-window').addEventListener('click', () => {
+  window.open(`${location.pathname}#journal`, 'laserbridge-record', 'width=980,height=760');
 });
 $('#grbl-form').addEventListener('submit', async event => {
   event.preventDefault();
@@ -570,12 +616,30 @@ $('#setup-form').addEventListener('submit', async event => {
   }
 });
 
+// Which panel is showing lives in the address, not in a variable.
+//
+// The record has no navigation entry any more - it belongs beside the machine,
+// where the last few entries are - but it is still a page of its own, and the
+// button on the machine page opens it in a second window to leave open next to
+// the laser. That only works if a window can be pointed at a panel.
+function showPanel(name) {
+  const known = $(`#panel-${name}`) ? name : 'dashboard';
+  $$('.nav-item').forEach(item => item.classList.toggle('active', item.dataset.panel === known));
+  $$('.panel').forEach(panel => panel.classList.toggle('active', panel.id === `panel-${known}`));
+  if (known === 'logs') loadLogs();
+  if (known === 'journal') loadJournal();
+  // The transcript is only recorded while somebody is reading it, so polling
+  // follows the panel rather than running for the life of the page.
+  updateConsolePolling();
+}
+
+window.addEventListener('hashchange', () => showPanel(location.hash.slice(1) || 'dashboard'));
+
 document.addEventListener('click', async event => {
   const navigation = event.target.closest('.nav-item');
   if (navigation) {
-    $$('.nav-item').forEach(item => item.classList.toggle('active', item === navigation));
-    $$('.panel').forEach(panel => panel.classList.toggle('active', panel.id === `panel-${navigation.dataset.panel}`));
-    if (navigation.dataset.panel === 'logs') loadLogs();
+    location.hash = navigation.dataset.panel;
+    showPanel(navigation.dataset.panel);
   }
   const action = event.target.closest('.service-action');
   if (action) {
@@ -603,8 +667,10 @@ $('#reboot').addEventListener('click', async () => {
   try { await request('/api/system/reboot', {method: 'POST'}); toast('Appliance is rebooting'); }
   catch (error) { toast(error.message, true); }
 });
-$('#camera-preview').addEventListener('load', event => event.target.classList.add('loaded'));
-$('#camera-preview').addEventListener('error', event => event.target.classList.remove('loaded'));
+$$('.camera-stream').forEach(image => {
+  image.addEventListener('load', event => event.target.classList.add('loaded'));
+  image.addEventListener('error', event => event.target.classList.remove('loaded'));
+});
 
 // Steering.
 //
@@ -640,10 +706,19 @@ function updateSteering(bridge) {
   home.dataset.unavailable = machine.homing === 'off' ? 'yes' : '';
   // Stop is deliberately not disabled: it is the one command that ends the
   // conflict rather than joining it.
-  $$('#control-card .button.jog, #control-card .button.control').forEach(b => {
+  $$('.steerable .button.jog, .steerable .button.control').forEach(b => {
     b.disabled = Boolean(client) || b.dataset.unavailable === 'yes';
   });
   $('#aim-on').disabled = Boolean(client);
+  // The console keeps showing the traffic while a client is connected - that is
+  // when it is most worth watching - but sending into somebody else's stream is
+  // the one thing it must not offer.
+  $('#console-send').disabled = Boolean(client);
+  $('#console-line').disabled = Boolean(client);
+  $('#console-line').placeholder = client
+    ? 'A client is connected; the appliance sends nothing while somebody else is steering'
+    : 'Type a command, e.g. $$ or G0 X10';
+  $('#goto-send').disabled = Boolean(client);
   if (client) {
     badge.textContent = 'CLIENT IN CHARGE';
     badge.className = 'badge stopped';
@@ -701,12 +776,44 @@ document.addEventListener('click', async event => {
     return;
   }
   const control = event.target.closest('.button.control');
-  if (control) {
+  if (!control) return;
+  // The work origin is a go-to, not a command of its own: X0 Y0 in the
+  // coordinate system the readout is showing, with Z left alone.
+  if (control.dataset.command === 'goto-origin') {
     try {
-      await steer(control.dataset.command);
-      toast(`${control.dataset.command} sent`);
+      await steer('goto', {x: 0, y: 0, feed: Number($('#jog-feed').value)});
+      toast('Moving to the work origin');
     } catch (error) { toast(error.message, true); }
+    return;
   }
+  try {
+    await steer(control.dataset.command, control.dataset.axis ? {axis: control.dataset.axis} : {});
+    toast(control.dataset.command === 'zero'
+      ? `${control.dataset.axis} zeroed here`
+      : `${control.dataset.command} sent`);
+  } catch (error) { toast(error.message, true); }
+});
+
+// Go to a position rather than by a distance.
+//
+// An empty field means "leave this axis alone", which is why the values are
+// only sent when they were actually typed: a go-to that quietly added Z0
+// because the box was empty would drive the head into the bed.
+$('#goto-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const body = {feed: Number($('#jog-feed').value)};
+  for (const axis of ['x', 'y', 'z']) {
+    const value = $(`#goto-${axis}`).value.trim();
+    if (value !== '') body[axis] = Number(value);
+  }
+  if (body.x === undefined && body.y === undefined && body.z === undefined) {
+    toast('Give at least one coordinate to move to', true);
+    return;
+  }
+  try {
+    await steer('goto', body);
+    toast('Moving — Cancel jog stops it');
+  } catch (error) { toast(error.message, true); }
 });
 
 $('#control-stop').addEventListener('click', async () => {
@@ -733,6 +840,145 @@ window.addEventListener('pagehide', () => {
     body: '{}',
     keepalive: true
   }).catch(() => {});
+});
+
+// The console.
+//
+// It is the monitor port for people who do not have a terminal: the same marked
+// transcript, with > for what the client sent, < for what the controller
+// answered and * for the appliance's own commands. The daemon only assembles it
+// while somebody is asking, so the polling below is what keeps it alive - and
+// stopping the polling when this panel is not showing is not an optimisation,
+// it is what puts the byte path back to carrying bytes and nothing else.
+const consoleKeep = 400;
+let consoleLines = [];
+let consoleSeq = 0;
+let consoleTimer = null;
+let consoleAsking = false;
+const consoleHistory = [];
+let consoleHistoryAt = -1;
+
+function consoleShowing() {
+  return $('#panel-machine').classList.contains('active') && !$('#machine-workspace').hidden;
+}
+
+function updateConsolePolling() {
+  if (consoleShowing() && !consoleTimer) {
+    consoleTimer = setInterval(pollConsole, 1000);
+    pollConsole();
+  } else if (!consoleShowing() && consoleTimer) {
+    clearInterval(consoleTimer);
+    consoleTimer = null;
+    setConsoleBadge('IDLE', false);
+  }
+}
+
+function setConsoleBadge(text, recording) {
+  const element = $('#console-badge');
+  element.textContent = text;
+  element.className = `badge ${recording ? 'running' : ''}`;
+}
+
+async function pollConsole() {
+  // A tab in the background is not somebody reading. Asking would renew the
+  // lease and keep the daemon assembling lines for a window nobody can see -
+  // which is the thing the lease exists to prevent.
+  if (consoleAsking || document.hidden) return;
+  consoleAsking = true;
+  try {
+    const answer = await request(`/api/grbl/console?after=${consoleSeq}`);
+    if (!answer.available) {
+      setConsoleBadge('UNAVAILABLE', false);
+      return;
+    }
+    setConsoleBadge(answer.recording ? 'RECORDING' : 'STARTING', answer.recording);
+    if (answer.missed) {
+      // A gap is said out loud rather than closed over: a transcript with a
+      // hole in it that looks continuous is worse than no transcript.
+      consoleLines.push({mark: '!', text: `… ${answer.missed} lines were not kept (the page was not reading fast enough)`});
+    }
+    if (answer.lines.length) {
+      consoleLines.push(...answer.lines);
+      consoleSeq = answer.next;
+    }
+    if (consoleLines.length > consoleKeep) consoleLines = consoleLines.slice(-consoleKeep);
+    if (answer.lines.length || answer.missed) renderConsole();
+  } catch (error) {
+    setConsoleBadge('UNAVAILABLE', false);
+  } finally { consoleAsking = false; }
+}
+
+function consoleFilters() {
+  return $$('.console-filter').filter(box => box.checked).map(box => box.value);
+}
+
+function renderConsole() {
+  const marks = consoleFilters();
+  const needle = $('#console-search').value.trim().toLowerCase();
+  const out = $('#console-out');
+  // Only follow the tail while the reader is at the tail. Scrolling up to read
+  // something and being yanked back down every second is the way a console
+  // becomes useless.
+  const atBottom = out.scrollHeight - out.scrollTop - out.clientHeight < 40;
+  const shown = consoleLines.filter(line =>
+    (line.mark === '!' || marks.includes(line.mark)) &&
+    (!needle || line.text.toLowerCase().includes(needle)));
+  if (!shown.length) {
+    out.replaceChildren(Object.assign(document.createElement('p'), {
+      className: 'muted',
+      textContent: consoleLines.length
+        ? 'Nothing matches the filter.'
+        : 'Nothing yet. The transcript is only kept while this page is open on it.'}));
+    return;
+  }
+  const marker = {'>': 'sent', '<': 'received', '*': 'appliance', '!': 'gap'};
+  out.replaceChildren(...shown.map(line => {
+    const row = document.createElement('div');
+    row.className = `console-line console-${marker[line.mark] || 'appliance'}`;
+    const mark = document.createElement('span');
+    mark.className = 'console-mark';
+    mark.textContent = line.mark;
+    const text = document.createElement('span');
+    text.className = 'console-text';
+    text.textContent = line.text;
+    row.append(mark, text);
+    return row;
+  }));
+  if (atBottom) out.scrollTop = out.scrollHeight;
+}
+
+$$('.console-filter').forEach(box => box.addEventListener('change', renderConsole));
+$('#console-search').addEventListener('input', renderConsole);
+$('#console-clear').addEventListener('click', () => {
+  // Clears this reader's view, not the record: the journal is the record and it
+  // is on disk.
+  consoleLines = [];
+  renderConsole();
+});
+
+$('#console-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const field = $('#console-line');
+  const line = field.value.trim();
+  if (!line) return;
+  try {
+    await steer('send', {line});
+    consoleHistory.push(line);
+    consoleHistoryAt = consoleHistory.length;
+    field.value = '';
+    // The line appears in the transcript the moment the appliance writes it,
+    // marked *, so there is nothing to echo here.
+    pollConsole();
+  } catch (error) { toast(error.message, true); }
+});
+
+$('#console-line').addEventListener('keydown', event => {
+  if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+  if (!consoleHistory.length) return;
+  event.preventDefault();
+  consoleHistoryAt += event.key === 'ArrowUp' ? -1 : 1;
+  consoleHistoryAt = Math.max(0, Math.min(consoleHistory.length, consoleHistoryAt));
+  event.target.value = consoleHistory[consoleHistoryAt] || '';
 });
 
 async function start() {
@@ -765,6 +1011,7 @@ async function start() {
     await loadDevices();
     await loadMachine();
     await loadJournal();
+    showPanel(location.hash.slice(1) || 'dashboard');
     setInterval(loadStatus, 5000);
     // The machine reading is asked for more often than the rest: it is the
     // one thing on the page that changes while a job runs.

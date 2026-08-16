@@ -64,8 +64,6 @@
     <nav class="nav" aria-label="Main navigation">
       <button class="nav-item active" data-panel="dashboard">Dashboard</button>
       <button class="nav-item" data-panel="machine">Machine</button>
-      <button class="nav-item" data-panel="grbl">GRBL settings</button>
-      <button class="nav-item" data-panel="journal">What happened</button>
       <button class="nav-item" data-panel="camera">Camera</button>
       <button class="nav-item" data-panel="system">System</button>
       <button class="nav-item" data-panel="logs">Logs</button>
@@ -91,7 +89,7 @@
 
           <article class="card camera-card">
             <div class="card-head"><h2>Camera</h2><span class="badge" id="ustreamer-badge">UNKNOWN</span></div>
-            <div class="preview"><img id="camera-preview" alt="Live camera preview"><span id="preview-empty">Stream preview unavailable</span></div>
+            <div class="preview"><img class="camera-stream" id="camera-preview" alt="Live camera preview"><span id="preview-empty">Stream preview unavailable</span></div>
             <dl class="primary-stats compact">
               <div><dt>Device</dt><dd id="dash-camera-device">—</dd></div>
               <div><dt>Video</dt><dd id="dash-camera-mode">—</dd></div>
@@ -115,68 +113,143 @@
       </section>
 
       <section class="panel" id="panel-machine">
-        <div class="heading"><div><p class="eyebrow">WHAT THE MACHINE IS DOING</p><h1>Machine</h1></div></div>
+        <div class="heading">
+          <div><p class="eyebrow">STEERING, CAMERA AND CONSOLE</p><h1>Machine</h1></div>
+          <div class="heading-state"><span class="badge" id="machine-badge">UNKNOWN</span><span class="muted" id="machine-bridge-state">—</span></div>
+        </div>
 
-        <article class="card machine-card" id="machine-card" hidden>
-          <div class="card-head"><h2>Reading</h2><span class="badge" id="machine-badge">UNKNOWN</span></div>
-          <dl class="primary-stats compact">
-            <div><dt>Bridge</dt><dd id="machine-bridge-state">—</dd></div>
-            <div><dt>Client</dt><dd id="machine-client">none</dd></div>
-            <div><dt>Position</dt><dd id="machine-position">—</dd></div>
-            <div><dt>Feed / power</dt><dd id="machine-feed">—</dd></div>
-            <div><dt>Laser output</dt><dd id="machine-beam">—</dd></div>
-            <div><dt>Controller</dt><dd id="machine-firmware">—</dd></div>
-            <div><dt>Job</dt><dd id="machine-job">—</dd></div>
-            <div><dt>Transferred</dt><dd id="machine-bytes">—</dd></div>
-          </dl>
-          <p class="machine-note" id="machine-note" hidden></p>
-        </article>
-
-        <article class="card control-card" id="control-card" hidden>
-          <div class="card-head"><h2>Steering</h2><span class="badge" id="control-badge">READY</span></div>
-          <p class="machine-note" id="control-blocked" hidden></p>
-
-          <div class="control-grid">
-            <div class="jog-pad">
-              <button class="button jog" data-axis="Y" data-sign="1" title="Y+">↑</button>
-              <button class="button jog" data-axis="X" data-sign="-1" title="X−">←</button>
-              <button class="button jog" data-axis="X" data-sign="1" title="X+">→</button>
-              <button class="button jog" data-axis="Y" data-sign="-1" title="Y−">↓</button>
-              <span class="jog-centre" id="jog-step-label">1 mm</span>
-            </div>
-
-            <div class="control-column">
-              <label>Step<select id="jog-step"><option>0.1</option><option selected>1</option><option>10</option><option>100</option></select><small>Millimetres per press.</small></label>
-              <label>Feed<input id="jog-feed" type="number" min="1" max="20000" value="1000"><small>mm/min for jogs.</small></label>
-              <div class="actions">
-                <button class="button jog" data-axis="Z" data-sign="1">Z ↑</button>
-                <button class="button jog" data-axis="Z" data-sign="-1">Z ↓</button>
+        <div class="machine-layout" id="machine-workspace" hidden>
+          <div class="machine-column">
+            <article class="card dro-card steerable">
+              <div class="card-head"><h2>Position</h2><span class="muted" id="dro-note">work coordinates</span></div>
+              <div class="dro">
+                <div class="dro-axis"><span class="dro-name">X</span><strong id="dro-x">—</strong><small id="dro-mx">machine —</small><button class="button small control" data-command="zero" data-axis="X" title="Set the work origin for X here">Zero</button></div>
+                <div class="dro-axis"><span class="dro-name">Y</span><strong id="dro-y">—</strong><small id="dro-my">machine —</small><button class="button small control" data-command="zero" data-axis="Y" title="Set the work origin for Y here">Zero</button></div>
+                <div class="dro-axis"><span class="dro-name">Z</span><strong id="dro-z">—</strong><small id="dro-mz">machine —</small><button class="button small control" data-command="zero" data-axis="Z" title="Set the work origin for Z here">Zero</button></div>
               </div>
-            </div>
+              <form class="goto-row" id="goto-form">
+                <label>Go to X<input id="goto-x" type="number" step="0.001" placeholder="keep"></label>
+                <label>Y<input id="goto-y" type="number" step="0.001" placeholder="keep"></label>
+                <label>Z<input id="goto-z" type="number" step="0.001" placeholder="keep"></label>
+                <button type="submit" class="button primary" id="goto-send">Go</button>
+                <button type="button" class="button control" data-command="goto-origin" id="goto-origin">Work origin</button>
+              </form>
+              <p class="muted goto-note">Sent as a jog in the coordinate system shown above, at the jog feed rate — so <strong>Cancel jog</strong> stops it and nothing is left in a different modal state. An empty field leaves that axis where it is.</p>
+            </article>
 
-            <div class="control-column">
-              <div class="actions">
-                <button class="button control" data-command="home">Home ($H)</button>
-                <button class="button control" data-command="unlock">Unlock ($X)</button>
+            <article class="card control-card steerable" id="control-card">
+              <div class="card-head"><h2>Steering</h2><span class="badge" id="control-badge">READY</span></div>
+              <p class="machine-note" id="control-blocked" hidden></p>
+
+              <div class="control-grid">
+                <div class="jog-pad">
+                  <button class="button jog" data-axis="Y" data-sign="1" title="Y+">↑</button>
+                  <button class="button jog" data-axis="X" data-sign="-1" title="X−">←</button>
+                  <button class="button jog" data-axis="X" data-sign="1" title="X+">→</button>
+                  <button class="button jog" data-axis="Y" data-sign="-1" title="Y−">↓</button>
+                  <span class="jog-centre" id="jog-step-label">1 mm</span>
+                </div>
+
+                <div class="control-column">
+                  <label>Step<select id="jog-step"><option>0.1</option><option selected>1</option><option>10</option><option>100</option></select><small>Millimetres per press.</small></label>
+                  <label>Feed<input id="jog-feed" type="number" min="1" max="20000" value="1000"><small>mm/min for jogs and go-to.</small></label>
+                  <div class="actions">
+                    <button class="button jog" data-axis="Z" data-sign="1">Z ↑</button>
+                    <button class="button jog" data-axis="Z" data-sign="-1">Z ↓</button>
+                  </div>
+                </div>
+
+                <div class="control-column">
+                  <div class="actions">
+                    <button class="button control" data-command="home">Home ($H)</button>
+                    <button class="button control" data-command="unlock">Unlock ($X)</button>
+                  </div>
+                  <div class="actions">
+                    <button class="button control" id="jog-cancel" data-command="jog-cancel" hidden>Cancel jog</button>
+                    <span class="muted" id="jog-state"></span>
+                  </div>
+                  <div class="actions">
+                    <button class="button control" data-command="hold">Feed hold</button>
+                    <button class="button control" data-command="resume">Resume</button>
+                  </div>
+                  <div class="aim-group">
+                    <label class="toggle aim-toggle"><input type="checkbox" id="aim-on"><span>Aiming beam</span></label>
+                    <label>Aiming power<input id="aim-percent" type="number" min="1" max="100" value="2"><small>Per cent of $30. It stays on only while this page keeps asking — close the tab and it goes out.</small></label>
+                  </div>
+                </div>
               </div>
-              <div class="actions">
-                <button class="button control" id="jog-cancel" data-command="jog-cancel" hidden>Cancel jog</button>
-                <span class="muted" id="jog-state"></span>
+
+              <div class="actions stop-row">
+                <button class="button danger" id="control-stop">Stop (soft reset)</button>
+                <p class="machine-warning">Ends the job and switches the output off, whatever <code>$32</code> says — and drops a connected client, because a controller that has been reset will not finish what it was sent. <strong>This is not an emergency stop.</strong> It needs this appliance, the network, the cable and the controller all working. Use the machine's own.</p>
               </div>
-              <div class="actions">
-                <button class="button control" data-command="hold">Feed hold</button>
-                <button class="button control" data-command="resume">Resume</button>
-              </div>
-              <label class="toggle aim-toggle"><input type="checkbox" id="aim-on"><span>Aiming beam</span></label>
-              <label>Aiming power<input id="aim-percent" type="number" min="1" max="100" value="2"><small>Per cent of $30. It stays on only while this page keeps asking — close the tab and it goes out.</small></label>
-            </div>
+            </article>
+
           </div>
 
-          <div class="actions stop-row">
-            <button class="button danger" id="control-stop">Stop (soft reset)</button>
-            <p class="machine-warning">Ends the job and switches the output off, whatever <code>$32</code> says — and drops a connected client, because a controller that has been reset will not finish what it was sent. <strong>This is not an emergency stop.</strong> It needs this appliance, the network, the cable and the controller all working. Use the machine's own.</p>
+          <div class="machine-column">
+            <article class="card camera-card">
+              <div class="card-head"><h2>Camera</h2><span class="badge" id="machine-camera-badge">UNKNOWN</span></div>
+              <div class="preview"><img class="camera-stream" id="machine-camera" alt="Live camera preview"><span>Stream preview unavailable</span></div>
+            </article>
+
+            <article class="card console-card steerable">
+              <div class="card-head"><h2>Console</h2><span class="badge" id="console-badge">IDLE</span></div>
+              <div class="console-filters">
+                <label class="toggle"><input type="checkbox" class="console-filter" value="&gt;" checked><span>Client →</span></label>
+                <label class="toggle"><input type="checkbox" class="console-filter" value="&lt;" checked><span>← Controller</span></label>
+                <label class="toggle"><input type="checkbox" class="console-filter" value="*" checked><span>Appliance</span></label>
+                <input id="console-search" type="search" placeholder="Filter text, e.g. error or $J=" autocomplete="off">
+                <button type="button" class="button small ghost" id="console-clear">Clear</button>
+              </div>
+              <div class="console-out" id="console-out" aria-live="off"><p class="muted" id="console-empty">Nothing recorded yet. The transcript is only kept while this page is open on it.</p></div>
+              <form class="console-input" id="console-form">
+                <input id="console-line" placeholder="Type a command, e.g. $$ or G0 X10" autocomplete="off" spellcheck="false" maxlength="80">
+                <button type="submit" class="button" id="console-send">Send</button>
+              </form>
+              <p class="muted console-note">One printable line at a time, sent only when no client is connected. <code>?</code>, <code>!</code> and <code>~</code> are real-time keys and have their own buttons. ↑ recalls what you sent before.</p>
+            </article>
+
+            <article class="card machine-card" id="machine-card">
+              <div class="card-head"><h2>Reading</h2><span class="muted">what the controller last said</span></div>
+              <dl class="primary-stats compact">
+                <div><dt>Client</dt><dd id="machine-client">none</dd></div>
+                <div><dt>Feed / power</dt><dd id="machine-feed">—</dd></div>
+                <div><dt>Laser output</dt><dd id="machine-beam">—</dd></div>
+                <div><dt>Job</dt><dd id="machine-job">—</dd></div>
+                <div><dt>Controller</dt><dd id="machine-firmware">—</dd></div>
+                <div><dt>Transferred</dt><dd id="machine-bytes">—</dd></div>
+              </dl>
+              <p class="machine-note" id="machine-note" hidden></p>
+            </article>
+
           </div>
-        </article>
+        </div>
+
+        <details class="card details-card" id="machine-record">
+          <summary><span>What happened</span><span class="muted" id="machine-record-count">alarms, errors and anything the bridge did on its own</span></summary>
+          <div id="machine-journal"></div>
+          <div class="actions"><button type="button" class="button small" id="journal-window">Open the full record in its own window</button><button type="button" class="button small ghost" id="journal-refresh">Refresh</button></div>
+        </details>
+
+        <details class="card details-card" id="machine-settings">
+          <summary><span>Connection and bridge settings</span><span class="muted">device, baud rate, TCP port, what happens when a client disappears</span></summary>
+          <form class="config-form" id="grbl-form">
+            <div class="form-grid">
+              <label class="wide">Serial device<input name="device" list="serial-devices" required autocomplete="off"><datalist id="serial-devices"></datalist><small>Stable /dev/serial/by-id paths are preferred.</small></label>
+              <label>Bridge service<select name="backend"><option value="ser2net">ser2net (proven)</option><option value="laserbridged">laserbridged (reports machine state)</option></select><small>Only one may hold the serial port.</small></label>
+              <label>If the client disconnects<select name="on_disconnect"><option value="reset">Feed hold, then soft reset (recommended)</option><option value="hold">Feed hold, and check the beam went off</option><option value="none">Let the machine finish its buffer</option></select><small>laserbridged only. A soft reset switches the output off whatever the controller is configured like; a feed hold only does if laser mode ($32) is on.</small></label>
+              <label>Read-only monitor port<input name="monitor_port" type="number" min="0" max="65535" required><small>0 is off. The same transcript as the console above, over TCP, for a client that wants to log it.</small></label>
+              <label>Stop a stationary beam after<input name="stationary_beam_seconds" type="number" min="0" max="600" required><small>Seconds. 0 is off. Must be longer than your longest pierce, which is a stationary burn on purpose.</small></label>
+              <label>Baud rate<select name="baudrate"><option>9600</option><option>19200</option><option>38400</option><option>57600</option><option selected>115200</option><option>230400</option><option>250000</option><option>500000</option><option>1000000</option></select></label>
+              <label>TCP port<input name="port" type="number" min="1" max="65535" required></label>
+              <label>Maximum clients<input name="max_connections" type="number" min="1" max="16" required><small>ser2net only. laserbridged serves one on purpose.</small></label>
+              <label class="toggle"><input name="reconnect" type="checkbox"><span>Reconnect when device returns</span></label>
+              <label class="toggle"><input name="kick_old_user" type="checkbox"><span>Kick old client on new connection</span></label>
+            </div>
+            <div class="actions"><button type="submit" class="button primary">Save GRBL settings</button><button type="button" class="button service-action" data-grbl data-service="ser2net" data-action="restart">Restart</button><button type="button" class="button danger service-action" data-grbl data-service="ser2net" data-action="stop">Stop</button></div>
+          </form>
+        </details>
 
         <article class="card" id="ser2net-note" hidden>
           <div class="card-head"><h2>ser2net is carrying the port</h2><span class="badge stopped">NOT WATCHED</span></div>
@@ -186,14 +259,14 @@
             <li>a laser left on while nothing moves is not noticed, and not switched off;</li>
             <li>a client that disappears mid-job gets no feed hold and no soft reset — the machine finishes whatever is in its planner buffer;</li>
             <li>nothing is recorded about alarms, errors or the line that caused them;</li>
-            <li>and nothing on this page can steer the machine, because nothing here knows what it is doing.</li>
+            <li>the console above stays empty, and nothing here can steer the machine, because nothing here knows what it is doing.</li>
           </ul>
-          <p class="muted">Switch to laserbridged under GRBL settings to get them back. Either way, neither is an emergency stop — use the machine's own.</p>
+          <p class="muted">Switch to laserbridged in the settings above to get them back. Either way, neither is an emergency stop — use the machine's own.</p>
         </article>
       </section>
 
       <section class="panel" id="panel-journal">
-        <div class="heading"><div><p class="eyebrow">THE RECORD</p><h1>What happened</h1></div><button class="button ghost" id="journal-refresh">Refresh</button></div>
+        <div class="heading"><div><p class="eyebrow">THE RECORD</p><h1>What happened</h1></div><button class="button ghost" id="journal-refresh-panel">Refresh</button></div>
         <article class="card" id="journal-card" hidden>
           <p class="muted journal-intro">Alarms, errors and anything the bridge did on its own — with the line that caused it. Kept across a reboot and read back after one, so an incident survives the restart it caused.</p>
           <div id="journal"></div>
@@ -201,25 +274,6 @@
         <article class="card" id="journal-unavailable" hidden>
           <p class="muted">The record is kept by laserbridged. With ser2net carrying the port there is nothing to record: it never knows what it is carrying.</p>
         </article>
-      </section>
-
-      <section class="panel" id="panel-grbl">
-        <div class="heading"><div><p class="eyebrow">SERIAL TO TCP</p><h1>GRBL settings</h1></div></div>
-        <form class="card form-card config-form" id="grbl-form">
-          <div class="form-grid">
-            <label class="wide">Serial device<input name="device" list="serial-devices" required autocomplete="off"><datalist id="serial-devices"></datalist><small>Stable /dev/serial/by-id paths are preferred.</small></label>
-            <label>Bridge service<select name="backend"><option value="ser2net">ser2net (proven)</option><option value="laserbridged">laserbridged (reports machine state)</option></select><small>Only one may hold the serial port.</small></label>
-            <label>If the client disconnects<select name="on_disconnect"><option value="reset">Feed hold, then soft reset (recommended)</option><option value="hold">Feed hold, and check the beam went off</option><option value="none">Let the machine finish its buffer</option></select><small>laserbridged only. A soft reset switches the output off whatever the controller is configured like; a feed hold only does if laser mode ($32) is on.</small></label>
-            <label>Read-only monitor port<input name="monitor_port" type="number" min="0" max="65535" required><small>0 is off. Shows the traffic for diagnosis without taking the port from LightBurn.</small></label>
-            <label>Stop a stationary beam after<input name="stationary_beam_seconds" type="number" min="0" max="600" required><small>Seconds. 0 is off. Must be longer than your longest pierce, which is a stationary burn on purpose.</small></label>
-            <label>Baud rate<select name="baudrate"><option>9600</option><option>19200</option><option>38400</option><option>57600</option><option selected>115200</option><option>230400</option><option>250000</option><option>500000</option><option>1000000</option></select></label>
-            <label>TCP port<input name="port" type="number" min="1" max="65535" required></label>
-            <label>Maximum clients<input name="max_connections" type="number" min="1" max="16" required><small>ser2net only. laserbridged serves one on purpose.</small></label>
-            <label class="toggle"><input name="reconnect" type="checkbox"><span>Reconnect when device returns</span></label>
-            <label class="toggle"><input name="kick_old_user" type="checkbox"><span>Kick old client on new connection</span></label>
-          </div>
-          <div class="actions"><button type="submit" class="button primary">Save GRBL settings</button><button type="button" class="button service-action" data-grbl data-service="ser2net" data-action="restart">Restart</button><button type="button" class="button danger service-action" data-grbl data-service="ser2net" data-action="stop">Stop</button></div>
-        </form>
       </section>
 
       <section class="panel" id="panel-camera">

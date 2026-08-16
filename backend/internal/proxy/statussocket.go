@@ -104,6 +104,16 @@ func (s *StatusSocket) answer(conn net.Conn) {
 			limit, _ = strconv.Atoi(fields[1])
 		}
 		_ = encoder.Encode(s.bridge.Journal().Recent(limit))
+	case "console":
+		// A read, like the journal, and answered on the same terms: the
+		// transcript is what the monitor port has always shown to anyone who
+		// could reach it. Asking is also what keeps the recording alive, which
+		// is why this is not simply another field of the status.
+		after := uint64(0)
+		if len(fields) > 1 {
+			after, _ = strconv.ParseUint(fields[1], 10, 64)
+		}
+		_ = encoder.Encode(s.bridge.Console(after))
 	case "command":
 		uid, err := peerUID(conn)
 		if err != nil || uid != 0 {
@@ -117,7 +127,7 @@ func (s *StatusSocket) answer(conn net.Conn) {
 			return
 		}
 		answer := CommandAnswer{}
-		if err := s.bridge.Do(request.Command, Jog{Axis: request.Axis, Distance: request.Distance, Feed: request.Feed}, request.Percent, request.Holder); err != nil {
+		if err := s.bridge.Do(request); err != nil {
 			answer.Error = err.Error()
 		}
 		_ = encoder.Encode(answer)
@@ -167,24 +177,6 @@ func ReadStatusWithin(path string, timeout time.Duration) (Status, error) {
 	return status, err
 }
 
-// CommandRequest is an operator's command on its way to the daemon, and
-// CommandAnswer is what came back. An empty Error means it was sent; it does
-// not mean the machine did anything, which only the machine can say.
-type CommandRequest struct {
-	Command  Command `json:"command"`
-	Axis     string  `json:"axis,omitempty"`
-	Distance float64 `json:"distance,omitempty"`
-	Feed     float64 `json:"feed,omitempty"`
-	Percent  int     `json:"percent,omitempty"`
-	// Holder identifies who is asking - a browser session, not a person. It
-	// decides who may hold the aiming beam and it goes into the record.
-	Holder string `json:"holder,omitempty"`
-}
-
-type CommandAnswer struct {
-	Error string `json:"error,omitempty"`
-}
-
 // SendCommand asks the daemon to steer the machine.
 func SendCommand(path string, request CommandRequest) (CommandAnswer, error) {
 	payload, err := json.Marshal(request)
@@ -194,6 +186,14 @@ func SendCommand(path string, request CommandRequest) (CommandAnswer, error) {
 	var answer CommandAnswer
 	err = ask(path, "command "+string(payload), &answer, askTimeout)
 	return answer, err
+}
+
+// ReadConsole asks the daemon what has crossed the wire since a sequence
+// number, and by asking keeps the transcript being recorded.
+func ReadConsole(path string, after uint64) (ConsoleView, error) {
+	var view ConsoleView
+	err := ask(path, "console "+strconv.FormatUint(after, 10), &view, askTimeout)
+	return view, err
 }
 
 // ReadJournal asks the daemon what has gone wrong lately.

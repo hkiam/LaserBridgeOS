@@ -15,7 +15,7 @@ func TestTheApplianceWillNotSteerAMachineSomebodyElseIsSteering(t *testing.T) {
 	defer client.Close()
 
 	for _, command := range []Command{CommandHome, CommandUnlock, CommandJog, CommandAim, CommandHold} {
-		err := bridge.Do(command, Jog{Axis: "X", Distance: 10, Feed: 1000}, 2, "test-holder")
+		err := bridge.Do(CommandRequest{Command: command, Axis: "X", Distance: 10, Feed: 1000, Percent: 2, Holder: "test-holder"})
 		if err == nil {
 			t.Fatalf("%s was accepted while a client was connected", command)
 		}
@@ -38,7 +38,7 @@ func TestStopIsTheOneCommandAllowedWhileSomebodyIsSteering(t *testing.T) {
 	})
 	defer client.Close()
 
-	if err := bridge.Do(CommandStop, Jog{}, 0, "test-holder"); err != nil {
+	if err := bridge.Do(CommandRequest{Command: CommandStop, Holder: "test-holder"}); err != nil {
 		t.Fatalf("Stop was refused: %v", err)
 	}
 	waitForCounts(t, sim, 0, 0, 1)
@@ -63,7 +63,7 @@ func TestAJogIsRelativeAndInMillimetresEveryTime(t *testing.T) {
 	controller, _, bridge := startBridgeWith(t, func(c *Config) {})
 	waitFor(t, func() bool { return bridge.Status().Device != "" }, "the port to open")
 
-	if err := bridge.Do(CommandJog, Jog{Axis: "y", Distance: -2.5, Feed: 800}, 0, "test-holder"); err != nil {
+	if err := bridge.Do(CommandRequest{Command: CommandJog, Axis: "y", Distance: -2.5, Feed: 800, Holder: "test-holder"}); err != nil {
 		t.Fatal(err)
 	}
 	got := string(mustRead(t, controller, len("$J=G91 G21 Y-2.500 F800\n")))
@@ -73,14 +73,65 @@ func TestAJogIsRelativeAndInMillimetresEveryTime(t *testing.T) {
 		t.Fatalf("jog line = %q", got)
 	}
 
-	for _, bad := range []Jog{
+	for _, bad := range []CommandRequest{
 		{Axis: "A", Distance: 1, Feed: 100},
 		{Axis: "X", Distance: 0, Feed: 100},
 		{Axis: "X", Distance: 5000, Feed: 100},
 		{Axis: "X", Distance: 1, Feed: 0},
 	} {
-		if err := bridge.Do(CommandJog, bad, 0, "test-holder"); err == nil {
+		bad.Command, bad.Holder = CommandJog, "test-holder"
+		if err := bridge.Do(bad); err == nil {
 			t.Errorf("%+v was accepted", bad)
+		}
+	}
+}
+
+func TestAGoToIsAJogSoItCanBeCancelled(t *testing.T) {
+	controller, _, bridge := startBridgeWith(t, func(c *Config) {})
+	waitFor(t, func() bool { return bridge.Status().Device != "" }, "the port to open")
+
+	x, y := 12.5, -3.0
+	if err := bridge.Do(CommandRequest{Command: CommandGoTo, X: &x, Y: &y, Feed: 2000, Holder: "test-holder"}); err != nil {
+		t.Fatal(err)
+	}
+	// G90 rather than G91, still a jog: absolute, in work coordinates, and
+	// cancelled by the same 0x85 as any other jog.
+	want := "$J=G90 G21 X12.500 Y-3.000 F2000\n"
+	if got := string(mustRead(t, controller, len(want))); got != want {
+		t.Fatalf("go-to line = %q", got)
+	}
+
+	// An axis nobody asked about is left alone: "go to X0 Y0" must not also
+	// drop the head to Z0.
+	for _, bad := range []CommandRequest{
+		{Feed: 1000},
+		{X: &x, Feed: 0},
+		{X: &x, Feed: 30000},
+	} {
+		bad.Command, bad.Holder = CommandGoTo, "test-holder"
+		if err := bridge.Do(bad); err == nil {
+			t.Errorf("%+v was accepted", bad)
+		}
+	}
+}
+
+func TestATypedCommandIsOnePrintableLine(t *testing.T) {
+	controller, _, bridge := startBridgeWith(t, func(c *Config) {})
+	waitFor(t, func() bool { return bridge.Status().Device != "" }, "the port to open")
+
+	if err := bridge.Do(CommandRequest{Command: CommandSend, Line: " $$ ", Holder: "test-holder"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(mustRead(t, controller, len("$$\n"))); got != "$$\n" {
+		t.Fatalf("typed line = %q", got)
+	}
+
+	// Two lines in one command would put a line into the controller that the
+	// appliance never counted; the real-time keys jump the queue and have
+	// buttons that account for them properly.
+	for _, bad := range []string{"", "G0 X1\nG0 X2", "?", "!", "~", strings.Repeat("G", maxTypedLine+1)} {
+		if err := bridge.Do(CommandRequest{Command: CommandSend, Line: bad, Holder: "test-holder"}); err == nil {
+			t.Errorf("%q was accepted", bad)
 		}
 	}
 }
@@ -101,7 +152,7 @@ func TestTheAimingBeamIsHeldOnALease(t *testing.T) {
 	t.Cleanup(func() { close(done) })
 	waitFor(t, func() bool { return bridge.Status().Device != "" }, "the port to open")
 
-	if err := bridge.Do(CommandAim, Jog{}, 2, "test-holder"); err != nil {
+	if err := bridge.Do(CommandRequest{Command: CommandAim, Percent: 2, Holder: "test-holder"}); err != nil {
 		t.Fatal(err)
 	}
 	if !bridge.Aiming() {
@@ -112,7 +163,7 @@ func TestTheAimingBeamIsHeldOnALease(t *testing.T) {
 	sim.set("Idle", true)
 	for i := 0; i < 8; i++ {
 		time.Sleep(200 * time.Millisecond)
-		if err := bridge.Do(CommandAim, Jog{}, 2, "test-holder"); err != nil {
+		if err := bridge.Do(CommandRequest{Command: CommandAim, Percent: 2, Holder: "test-holder"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -139,7 +190,7 @@ func TestTheAimingBeamIsHeldOnALease(t *testing.T) {
 
 func TestSteeringNeedsAPort(t *testing.T) {
 	bridge := New(Config{Device: "/dev/does-not-exist", Baudrate: 115200, Port: 0}, nil)
-	if err := bridge.Do(CommandHome, Jog{}, 0, "test-holder"); err != ErrNoPort {
+	if err := bridge.Do(CommandRequest{Command: CommandHome, Holder: "test-holder"}); err != ErrNoPort {
 		t.Fatalf("err = %v, want ErrNoPort", err)
 	}
 	_ = net.Dial // keep the import honest for the helpers above

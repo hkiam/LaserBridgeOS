@@ -86,6 +86,12 @@ type Report struct {
 	// State and Position are set for a status report.
 	State    MachineState
 	Position Position
+	// PositionIsWork says which coordinate system Position is in: GRBL sends
+	// MPos or WPos, never both, and which one depends on $10.
+	PositionIsWork bool
+	// Offset is the WCO field: work position = machine position - offset.
+	Offset    Position
+	HasOffset bool
 	// HasPosition distinguishes a report without coordinates from one that
 	// genuinely sits at the origin.
 	HasPosition bool
@@ -185,6 +191,16 @@ func parseStatus(body string, report *Report) {
 			if position, ok := parsePosition(value); ok {
 				report.Position = position
 				report.HasPosition = true
+				report.PositionIsWork = name == "WPos"
+			}
+		case "WCO":
+			// The offset between the two. GRBL sends it every ten to thirty
+			// reports rather than in every one, so a sender is expected to
+			// remember it - and every sender in this field shows work
+			// coordinates, because that is what an operator sets a zero in.
+			if offset, ok := parsePosition(value); ok {
+				report.Offset = offset
+				report.HasOffset = true
 			}
 		case "FS":
 			// Feed and spindle speed, in that order. On a laser, spindle speed

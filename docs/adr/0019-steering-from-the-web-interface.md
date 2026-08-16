@@ -32,6 +32,12 @@ that class.
 **Three pages.** *Machine* is the reading and the steering, *GRBL settings* is
 the configuration, *What happened* is the record. The nav says what each is for.
 
+> Amended by [ADR 0020](0020-one-page-for-the-machine.md): the split was right
+> for the settings and the record and wrong for everything else. All four things
+> an operator holds at once - readout, steering, camera, transcript - are on the
+> Machine page now, with the settings and the record folded away on it. The rest
+> of this ADR stands unchanged.
+
 **Steering is bounded by what it will not do, not by who is asking.** Adding a
 login would be a larger change than this one and would not obviously help: the
 credential would be the same appliance password that is already root over SSH,

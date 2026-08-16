@@ -72,6 +72,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/devices", s.devices)
 	mux.HandleFunc("GET /api/grbl", s.grblStatus)
 	mux.HandleFunc("GET /api/grbl/journal", s.grblJournal)
+	mux.HandleFunc("GET /api/grbl/console", s.grblConsole)
 	mux.HandleFunc("POST /api/grbl/control/{command}", s.mutation(s.grblControl))
 	mux.HandleFunc("GET /api/config", s.getConfig)
 	mux.HandleFunc("PUT /api/config", s.mutation(s.putConfig))
