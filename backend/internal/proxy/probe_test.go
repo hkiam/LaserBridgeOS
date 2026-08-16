@@ -68,6 +68,39 @@ func TestTheControllerIsAskedWhatItIsBeforeAnyoneIsServed(t *testing.T) {
 	}
 }
 
+func TestTheProbeSurvivesTheResetItCauses(t *testing.T) {
+	// What the first appliance to run this actually did, every boot.
+	//
+	// Opening the serial port toggles DTR and resets an Arduino-based
+	// controller. It then says nothing at all while it boots and announces
+	// itself about two seconds later. The probe waited a second and a half for
+	// a status report, gave up, and the appliance never learned $32 - defeated
+	// by a reset it had caused itself.
+	controller, _, bridge := startBridgeWith(t, func(c *Config) {
+		c.IdlePoll = 100 * time.Millisecond
+		// The real budget: this is the test that exists for it.
+		c.ProbeIdentify = probeIdentify
+	})
+	sim := &controllerSim{t: t, controller: controller, state: "Idle", overrides: true, laserMode: "0"}
+	done := make(chan struct{})
+	go func() {
+		// Silent while it "reboots", then the banner, then normal service.
+		time.Sleep(2 * time.Second)
+		_, _ = controller.Write([]byte("Grbl 1.1h ['$' for help]\r\n"))
+		sim.run(done)
+	}()
+	t.Cleanup(func() { close(done) })
+
+	waitFor(t, func() bool {
+		for _, event := range bridge.Journal().Recent(0) {
+			if strings.Contains(event.Text, "laser mode ($32) is OFF") {
+				return true
+			}
+		}
+		return false
+	}, "the controller to be identified despite the reset")
+}
+
 func TestNothingIsAskedOfSomethingThatIsNotGRBL(t *testing.T) {
 	// $$ is meaningless to a Ruida board and there is no telling what it means
 	// to one nobody has tried. A device that has not answered like GRBL is not
