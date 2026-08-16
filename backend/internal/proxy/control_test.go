@@ -136,6 +136,32 @@ func TestATypedCommandIsOnePrintableLine(t *testing.T) {
 	}
 }
 
+func TestTheAimingBeamRidesOnAG1BecauseNothingElseReachesTheOutput(t *testing.T) {
+	// Reported from the workshop: the beam did not come on, although the
+	// controller accepted the command and reported a spindle that was on.
+	//
+	// In laser mode GRBL only applies the power a block programs if that
+	// block's modal motion is G1, G2 or G3 - "a G0 M3 S1000 will not turn on
+	// the laser", in its own documentation - and after a reset the modal motion
+	// is G0. So "M3 S20" on its own is accepted, acknowledged and dark.
+	controller, _, bridge := startBridgeWith(t, func(c *Config) {})
+	waitFor(t, func() bool { return bridge.Status().Device != "" }, "the port to open")
+
+	if err := bridge.Do(CommandRequest{Command: CommandAim, Percent: 2, Holder: "test-holder"}); err != nil {
+		t.Fatal(err)
+	}
+	// $30 is unknown here, so GRBL's default of 1000 is assumed: 2% is S20.
+	want := "M3\nG1 F100 S20\n"
+	if got := string(mustRead(t, controller, len(want))); got != want {
+		t.Fatalf("aiming sent %q, want %q", got, want)
+	}
+	// No axis words, so nothing moves: the G1 is there to put the parser where
+	// the power can reach the output.
+	if strings.ContainsAny(want, "XYZ") {
+		t.Error("the aiming block carries an axis word and would move the machine")
+	}
+}
+
 func TestTheAimingBeamIsHeldOnALease(t *testing.T) {
 	// The aiming beam is the appliance's own hazard. With nobody connected, a
 	// beam that is on is what TriggerBeamUnattended exists to stop - and it

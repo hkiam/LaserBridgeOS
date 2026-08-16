@@ -268,8 +268,10 @@ func (b *Bridge) Do(request CommandRequest) error {
 			// would fill the record with one line a second.
 			return nil
 		}
-		line := "M3 S" + strconv.Itoa(b.spindleFor(percent))
-		return b.commanded(command, holder, line+" (aiming beam at "+strconv.Itoa(percent)+"%)", b.sendLine(port, line))
+		lines := aimLines(b.spindleFor(percent))
+		return b.commanded(command, holder,
+			strings.Join(lines, "; ")+" (aiming beam at "+strconv.Itoa(percent)+"%)",
+			b.sendLines(port, lines...))
 	case CommandAimOff:
 		if err := b.aim.releaseBy(holder); err != nil {
 			return err
@@ -277,6 +279,38 @@ func (b *Bridge) Do(request CommandRequest) error {
 		return b.commanded(command, holder, "M5", b.sendLine(port, "M5"))
 	default:
 		return fmt.Errorf("%w: %q", ErrUnknownCommand, command)
+	}
+}
+
+// aimFeed is the feed rate the aiming block carries. It is not used to move
+// anything - the block has no axis words - but a G1 needs one, and a modal feed
+// left behind at 100 mm/min is the least surprising thing to leave behind.
+const aimFeed = 100
+
+// aimLines switches the beam on for aiming, and it takes two lines because one
+// does not work.
+//
+// In laser mode the power a block programs is only applied if that block's
+// modal motion is G1, G2 or G3. GRBL's own documentation is explicit about it:
+// "a G0 M3 S1000 will not turn on the laser, but will set the laser modal state
+// to M3 enabled and power of S1000. A following G1 command will then
+// immediately be set to M3 and S1000."
+//
+// After a reset the modal motion is G0, which is where an appliance that has
+// just opened the port and asked its opening questions finds the controller. So
+// the "M3 S…" this used to send was accepted, acknowledged, reported by the
+// controller as a spindle that is on - and dark. It was reported from the
+// workshop, on a real machine, and it is exactly what LightBurn's own fire
+// button avoids by sending M3 and then G1 F100 S20.
+//
+// The G1 carries no axis words, so nothing moves; it puts the parser where the
+// power can reach the output. M3 rather than M4 because M4 is dynamic power and
+// switches the beam off whenever the machine is not moving, which is the whole
+// of what aiming is.
+func aimLines(power int) []string {
+	return []string{
+		"M3",
+		fmt.Sprintf("G1 F%d S%d", aimFeed, power),
 	}
 }
 
@@ -429,7 +463,12 @@ func typedLine(line string) (string, error) {
 // client's stream, applied to our own: without it, somebody tapping the jog pad
 // faster than the machine answers pushes characters into a full buffer, and
 // what the controller then parses is not what was sent.
-const outstandingLines = 3
+//
+// Four rather than three since the aiming beam became two lines: switching it
+// on and off again without the controller having answered anything - which is
+// what a pseudo-terminal in a test does, and a very slow machine could - is
+// three lines, and leaving no room for a fourth would refuse the release.
+const outstandingLines = 4
 
 // lineAnswerTimeout releases a slot for a line that was never answered. Homing
 // can take a minute on a large machine and its "ok" comes at the end, so this
@@ -463,20 +502,45 @@ func (b *Bridge) acknowledged() {
 // still running is what makes jogging continuous rather than a series of
 // twitches. What it waits for is the answer, not the motion.
 func (b *Bridge) sendLine(port *serial.Port, line string) error {
+	return b.sendLines(port, line)
+}
+
+// sendLines is the same for a command that takes more than one line, and it
+// takes all its slots before it writes anything.
+//
+// Half of a two-line command is worse than none of it: the aiming beam is M3
+// followed by the G1 that makes the power reach the output, and stopping
+// between them leaves a controller with the spindle enabled, no beam, and an
+// operator holding a lease on nothing.
+func (b *Bridge) sendLines(port *serial.Port, lines ...string) error {
 	if b.currentClient() != nil {
 		return ErrClientInCharge
 	}
-	select {
-	case b.injected <- time.Now():
-	default:
-		return ErrStillWorking
+	taken := 0
+	for range lines {
+		select {
+		case b.injected <- time.Now():
+			taken++
+		default:
+			b.release(taken)
+			return ErrStillWorking
+		}
 	}
-	if _, err := port.Write([]byte(line + "\n")); err != nil {
-		b.acknowledged()
+	payload := strings.Join(lines, "\n") + "\n"
+	if _, err := port.Write([]byte(payload)); err != nil {
+		b.release(taken)
 		return err
 	}
-	b.monitors.send('*', []byte(line+"\n"))
+	b.monitors.send('*', []byte(payload))
 	return nil
+}
+
+// release hands back slots that were taken for lines that never went out. The
+// entries are interchangeable tokens, so which one comes back does not matter.
+func (b *Bridge) release(count int) {
+	for i := 0; i < count; i++ {
+		b.acknowledged()
+	}
 }
 
 // forgetStaleLines releases slots held by lines the controller never answered.
