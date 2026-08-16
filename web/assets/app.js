@@ -912,8 +912,18 @@ function consoleFilters() {
   return $$('.console-filter').filter(box => box.checked).map(box => box.value);
 }
 
+// The appliance asks the controller for a status report every second whenever
+// nobody else has, and the controller answers - so left alone the transcript is
+// two lines a second of "? (status)" and "<Idle|MPos:…>" with the one line that
+// matters somewhere in between. They are hidden unless asked for, which is what
+// every sender's console does with the same traffic.
+function isPolling(line) {
+  return line.text === '? (status)' || (line.text.startsWith('<') && line.text.endsWith('>'));
+}
+
 function renderConsole() {
   const marks = consoleFilters();
+  const polling = $('#console-status').checked;
   const needle = $('#console-search').value.trim().toLowerCase();
   const out = $('#console-out');
   // Only follow the tail while the reader is at the tail. Scrolling up to read
@@ -922,12 +932,13 @@ function renderConsole() {
   const atBottom = out.scrollHeight - out.scrollTop - out.clientHeight < 40;
   const shown = consoleLines.filter(line =>
     (line.mark === '!' || marks.includes(line.mark)) &&
+    (polling || !isPolling(line)) &&
     (!needle || line.text.toLowerCase().includes(needle)));
   if (!shown.length) {
     out.replaceChildren(Object.assign(document.createElement('p'), {
       className: 'muted',
       textContent: consoleLines.length
-        ? 'Nothing matches the filter.'
+        ? 'Nothing matches the filter. Status polling is hidden unless the box above is ticked.'
         : 'Nothing yet. The transcript is only kept while this page is open on it.'}));
     return;
   }
@@ -947,7 +958,10 @@ function renderConsole() {
   if (atBottom) out.scrollTop = out.scrollHeight;
 }
 
-$$('.console-filter').forEach(box => box.addEventListener('change', renderConsole));
+$$('.console-filter, .console-filter-status').forEach(box => box.addEventListener('change', renderConsole));
+// Coming back to a tab should not mean waiting out an interval for the first
+// line, and leaving it should stop the recording without waiting either.
+document.addEventListener('visibilitychange', () => { if (!document.hidden) pollConsole(); });
 $('#console-search').addEventListener('input', renderConsole);
 $('#console-clear').addEventListener('click', () => {
   // Clears this reader's view, not the record: the journal is the record and it
