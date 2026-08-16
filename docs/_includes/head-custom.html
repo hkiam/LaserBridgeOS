@@ -1,0 +1,24 @@
+<!-- Mermaid, so the diagrams in the guide render as diagrams rather than as
+     code. GitHub renders ```mermaid natively in the README; Jekyll does not,
+     and turns it into <pre><code class="language-mermaid">. This finds those
+     and hands them to mermaid. If the script cannot be loaded the block stays
+     readable as text, which is the reason it is written this way round. -->
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  const blocks = document.querySelectorAll('pre > code.language-mermaid');
+  blocks.forEach(block => {
+    const holder = document.createElement('div');
+    holder.className = 'mermaid';
+    holder.textContent = block.textContent;
+    block.parentElement.replaceWith(holder);
+  });
+  mermaid.initialize({startOnLoad: true, theme: 'neutral', securityLevel: 'strict'});
+</script>
+<style>
+  /* The guide is a long read: give it room and keep the screenshots honest. */
+  .main-content { max-width: 78rem; }
+  .main-content img { max-width: 100%; border: 1px solid #d8dee4; border-radius: 6px; }
+  .main-content table { display: table; width: 100%; }
+  .main-content td:first-child { white-space: nowrap; }
+  .mermaid { margin: 1.5rem 0; text-align: center; }
+</style>
