@@ -332,6 +332,7 @@
             </div>
             <div class="actions"><button type="submit" class="button primary" id="install-update">Verify and stage update</button><button type="button" class="button" id="rollback-update">Boot previous slot next</button></div>
             <p class="muted" id="update-message" aria-live="polite">Persistent configuration under <code>/data</code> is preserved.</p>
+            <p class="muted update-copy">Install while you can reach the appliance. The shutdown disarms the watchdog before it asks for the reset, and some small x86 boards then switch off instead of restarting — the new slot boots normally, but only once somebody has cycled the power.</p>
           </form>
         </article>
       </section>
