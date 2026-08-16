@@ -137,6 +137,13 @@ func TestAnsweringBridgeIsLeftAlone(t *testing.T) {
 	answeringSocket(t, socket, true)
 	runner := &recordingRunner{statusOK: true}
 	watch := watchFor(t, socket, runner)
+	// The other tests want a bridge to be given up on quickly; this one wants it
+	// left alone, and fifty milliseconds to answer a Unix socket is not a
+	// generous allowance under the race detector, which slows everything down
+	// several times over. Three unlucky round trips in a row would restart a
+	// perfectly healthy bridge and fail this test for the wrong reason - and a
+	// test that flakes under -race is a test that gets -race switched off.
+	watch.Timeout = 500 * time.Millisecond
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

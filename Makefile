@@ -7,7 +7,7 @@ ROOT_DIR := $(CURDIR)
 HOST_UID := $(shell id -u)
 HOST_GID := $(shell id -g)
 
-.PHONY: all image test check fmt shellcheck run clean
+.PHONY: all image test race check fmt shellcheck run clean
 
 all: test
 
@@ -19,7 +19,14 @@ image:
 test:
 	docker run --rm --user $(HOST_UID):$(HOST_GID) -e GOCACHE=/tmp/go-cache -v $(ROOT_DIR):/src -w /src/backend golang:1.23-alpine go test ./...
 
-check:
+# The race detector, on an image that has a C compiler because -race needs cgo.
+# This appliance is almost entirely goroutines - one per client, the device
+# reader, the watchdog, the journal writer, the status socket - held together by
+# four mutexes. It was correct by discipline and had never once been checked.
+race:
+	docker run --rm --user $(HOST_UID):$(HOST_GID) -e GOCACHE=/tmp/go-cache -e GOFLAGS=-buildvcs=false -v $(ROOT_DIR):/src -w /src/backend golang:1.23 go test -race ./...
+
+check: race
 	docker run --rm --user $(HOST_UID):$(HOST_GID) -e GOCACHE=/tmp/go-cache -v $(ROOT_DIR):/src -w /src/backend golang:1.23-alpine go vet ./...
 	sh scripts/shell-files.sh | xargs -n1 sh -n
 	sh scripts/check-boot-policy.sh

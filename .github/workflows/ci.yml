@@ -24,6 +24,12 @@ jobs:
       - name: Go vet
         working-directory: backend
         run: go vet ./...
+      # Almost every line of this daemon runs beside another one. The suite had
+      # never been run under the race detector; it passes, and this is what
+      # keeps it passing.
+      - name: Race detector
+        working-directory: backend
+        run: go test -race ./...
 
   shellcheck:
     runs-on: ubuntu-latest

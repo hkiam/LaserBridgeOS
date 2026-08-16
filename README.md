@@ -955,7 +955,13 @@ password, so that a headless appliance can actually be diagnosed (ADR 0008).
 Whoever holds the SSH credential holds the machine.
 
 The WebUI has no login. Anyone who can reach port 80 can reconfigure the
-appliance, restart services, or reboot it. Two operations are exceptions
+appliance, restart services, reboot it — and, since the Machine page, move the
+machine and switch the laser on at low power. That last part is a real widening
+of what somebody on the network can do, and it is the reason the steering is
+bounded by what it refuses rather than by who is asking: nothing without
+laserbridged, nothing while a client is connected except Stop, and an aiming
+beam that goes out three seconds after the page holding it stops asking
+(ADR 0019). Two operations are exceptions
 because they can replace the running system: installing an update and
 changing the appliance password both require that password, and the shipped
 default is not accepted for either (ADR 0007).
