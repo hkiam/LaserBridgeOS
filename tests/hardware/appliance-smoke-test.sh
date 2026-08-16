@@ -41,7 +41,9 @@ on true >/dev/null 2>&1 || { echo "cannot reach laserbridge@$HOST over SSH" >&2;
 api status >/dev/null 2>&1 || { echo "the web interface on $HOST did not answer" >&2; exit 1; }
 
 say "Services"
-services=$(api status | tr ',' '\n' | sed -n 's/.*"\([a-z0-9-]*\)":\(true\|false\).*/\1 \2/p')
+# grep -oE rather than sed: BSD sed, which is what a Mac in a workshop has, does
+# not know \| in a basic expression and silently matches nothing at all.
+services=$(api status | grep -oE '"[a-z0-9-]+":(true|false)' | tr -d '"' | tr ':' ' ')
 for required in laserbridge-web laserbridge-watchdog; do
 	case "$(printf '%s\n' "$services" | sed -n "s/^$required //p")" in
 		true) ok "$required is running" ;;
@@ -58,6 +60,13 @@ if on test -e /dev/watchdog; then
 	ok "/dev/watchdog exists"
 	timeout=$(on cat /sys/class/watchdog/watchdog0/timeout 2>/dev/null || echo "")
 	[ -n "$timeout" ] && note "driver timeout: ${timeout}s"
+	# The strongest evidence available without waiting for a reset: something has
+	# the device open, and the board has been up longer than the timeout. If
+	# nothing were petting an armed watchdog, neither would be true.
+	up=$(on cut -d. -f1 /proc/uptime)
+	if [ -n "$timeout" ] && [ "$up" -gt "$timeout" ] 2>/dev/null; then
+		ok "armed and fed: up ${up}s with a ${timeout}s timeout"
+	fi
 	if on grep -q 'watchdog armed' /data/log/messages 2>/dev/null; then
 		ok "the watchdog reported arming in the log"
 	else
@@ -98,9 +107,11 @@ done
 say "Logs that survive a reboot"
 if on test -f /data/log/messages; then
 	ok "/data/log/messages exists"
-	lines=$(on wc -l /data/log/messages | awk '{print $1}')
+	lines=$(on doas wc -l /data/log/messages | awk '{print $1}')
 	note "$lines lines"
-	if on grep -qiE 'kern|linux version|usb ' /data/log/messages; then
+	# Quoted for the remote shell as well as this one: an unquoted pattern with
+	# a space in it arrives at the appliance as two arguments.
+	if on "doas grep -qiE 'kern|usb' /data/log/messages"; then
 		ok "kernel messages are in it (klogd is feeding the same file)"
 	else
 		bad "no kernel messages: klogd is not running, or not logging here"
@@ -108,7 +119,7 @@ if on test -f /data/log/messages; then
 	# Older than this boot is the whole point. The first line of the current
 	# file predating the boot proves the reboot did not empty it; a rotated
 	# generation proves the same thing and that rotation works.
-	if on test -f /data/log/messages.0; then
+	if on doas test -f /data/log/messages.0; then
 		ok "a rotated generation exists, so the size bound is being applied"
 	else
 		note "no rotation yet - expected on an appliance that has not logged 200 KiB"
@@ -128,13 +139,30 @@ fi
 # The parameter alone proves nothing about the adapter that was probed at boot.
 device=$(api config | sed -n 's/.*"device":"\([^"]*\)".*/\1/p' | head -1)
 if [ -n "$device" ]; then
-	control=$(on "for p in /sys/bus/usb/devices/*/power/control; do cat \$p; done" 2>/dev/null | sort -u | tr '\n' ' ')
-	note "power/control across USB devices: ${control:-unreadable}"
-	case "$configured:$control" in
-		-1:*auto*) bad "autosuspend is off but some device is still on 'auto'" ;;
-		-1:*) ok "every USB device is held awake" ;;
-		*) note "autosuspend is enabled deliberately; 'auto' is expected" ;;
-	esac
+	# control=on holds a device awake; so does a negative autosuspend_delay_ms,
+	# whatever control says - the kernel does not suspend a device whose delay is
+	# negative. A device probed after the appliance last applied its policy shows
+	# exactly that combination, having taken the delay from the module parameter,
+	# and reading it as a fault is how this check first reported a healthy camera
+	# as a problem.
+	awake=$(on "for d in /sys/bus/usb/devices/*/; do
+		c=\$(cat \$d/power/control 2>/dev/null) || continue
+		ms=\$(cat \$d/power/autosuspend_delay_ms 2>/dev/null)
+		case \"\$c:\$ms\" in
+			on:*) ;;
+			*:-*) ;;
+			*) echo \"\$(basename \$d) control=\$c delay=\$ms\" ;;
+		esac
+	done")
+	if [ -n "$configured" ] && [ "$configured" -lt 0 ] 2>/dev/null; then
+		if [ -z "$awake" ]; then
+			ok "no USB device can be suspended"
+		else
+			bad "autosuspend is off but these could still suspend: $awake"
+		fi
+	else
+		note "autosuspend is enabled deliberately; devices may suspend"
+	fi
 fi
 
 say "A configuration from a newer version"

@@ -62,10 +62,20 @@ func (m *Manager) ApplyUSBPolicy(cfg config.Config) error {
 		// The delay goes first. Setting control to auto while the old delay is
 		// still in place would open a window - short, but during a job - in
 		// which the device suspends on a schedule nobody asked for.
-		if seconds >= 0 {
-			if err := writeSysfs(filepath.Join(power, "autosuspend_delay_ms"), strconv.Itoa(seconds*1000)); err != nil && failure == nil {
-				failure = fmt.Errorf("set the autosuspend delay of %s: %w", entry.Name(), err)
-			}
+		//
+		// And it is set in both directions. A negative delay prevents
+		// autosuspend on its own, whatever power/control says afterwards - and
+		// something else may well say something afterwards: a driver, mdev, a
+		// device that re-enumerates. Setting only control leaves the decision
+		// resting on a value anybody can change, and a device that appears
+		// later gets a negative delay from the module parameter anyway, so this
+		// merely makes the ones we touched agree with the ones we did not.
+		delay := strconv.Itoa(seconds * 1000)
+		if seconds < 0 {
+			delay = "-1000"
+		}
+		if err := writeSysfs(filepath.Join(power, "autosuspend_delay_ms"), delay); err != nil && failure == nil {
+			failure = fmt.Errorf("set the autosuspend delay of %s: %w", entry.Name(), err)
 		}
 		if err := writeSysfs(filepath.Join(power, "control"), usbControl(seconds)); err != nil && failure == nil {
 			failure = fmt.Errorf("set the power control of %s: %w", entry.Name(), err)
