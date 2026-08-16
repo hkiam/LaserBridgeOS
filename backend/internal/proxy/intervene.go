@@ -222,14 +222,29 @@ func oneLine(text string) string {
 	return strings.NewReplacer("[", "(", "]", ")", "\r", " ", "\n", " ").Replace(text)
 }
 
-// The opening questions, and the window they have to fit in.
+// The opening questions, and the windows they have to fit in.
 //
-// probeGrace bounds how long a connecting client waits for them; probeAnswer
-// bounds how long the questions themselves wait for an answer.
+// The numbers come from what the first appliance to run this did, and the first
+// version of them was wrong in an instructive way. Opening the serial port
+// toggles DTR, which resets an Arduino-based controller - that is why the
+// bridge holds the port open for its whole life (ADR 0009) - and a controller
+// that has just been reset says nothing at all for a second or two before it
+// announces itself. The probe waited 1.5 seconds for a sign of life; the banner
+// arrived at 2. It gave up on a reset it had caused itself, every single boot.
+//
+// probeIdentify is now long enough for that reset and the boot after it,
+// probeSettings for the settings dump that follows, and probeGrace - how long a
+// connecting client waits - is longer than both together, because the gate only
+// means something while it is closed. The grace is derived rather than fixed,
+// so that shortening the budget in a test shortens the wait with it.
 const (
-	probeGrace  = 3 * time.Second
-	probeAnswer = 1500 * time.Millisecond
+	probeIdentify = 5 * time.Second
+	probeSettings = 2 * time.Second
 )
+
+func (b *Bridge) probeGrace() time.Duration {
+	return b.config.ProbeIdentify + probeSettings + time.Second
+}
 
 // probeController asks the controller what it is, in the one window where that
 // question is safe to ask.
@@ -269,6 +284,11 @@ func (b *Bridge) probeController(port *serial.Port) {
 	// wait for one: the watchdog polls whenever nobody else is, so the question
 	// has already been asked by the time this is looking.
 	if !b.answersLikeGRBL() {
+		// Said out loud rather than passed over. A record that contains nothing
+		// about the controller cannot be told apart from one where nobody
+		// looked, and this is the line that says which - it was how the failure
+		// above was found in the first place.
+		b.noteController()
 		return
 	}
 	for _, question := range []string{"$I\n", "$$\n"} {
@@ -281,7 +301,7 @@ func (b *Bridge) probeController(port *serial.Port) {
 		b.monitors.send('*', []byte(question))
 	}
 
-	deadline := time.NewTimer(probeAnswer)
+	deadline := time.NewTimer(probeSettings)
 	defer deadline.Stop()
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
@@ -302,10 +322,17 @@ func (b *Bridge) probeController(port *serial.Port) {
 	}
 }
 
-// answersLikeGRBL waits for a status report that parsed, which is the only
-// evidence available that the thing on the serial port is what we think.
+// answersLikeGRBL waits for the controller to give itself away, whichever way
+// it does so first.
+//
+// Two signals count. A status report that parsed is one. The welcome banner is
+// the other, and on the machine this was written for it is the one that
+// arrives: opening the port resets the controller, and what comes back two
+// seconds later is "Grbl 1.1h ['$' for help]". Waiting only for a status report
+// meant waiting for an answer to a question asked of a board that was still
+// booting.
 func (b *Bridge) answersLikeGRBL() bool {
-	deadline := time.NewTimer(probeAnswer)
+	deadline := time.NewTimer(b.config.ProbeIdentify)
 	defer deadline.Stop()
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
@@ -320,7 +347,8 @@ func (b *Bridge) answersLikeGRBL() bool {
 			if b.observer.Gibberish() {
 				return false
 			}
-			if b.observer.Machine().Reports > 0 {
+			machine := b.observer.Machine()
+			if machine.Reports > 0 || machine.Resets > 0 {
 				return true
 			}
 		}

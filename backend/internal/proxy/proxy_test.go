@@ -51,6 +51,11 @@ func startBridgeWith(t *testing.T, adjust func(*Config)) (controller *os.File, a
 		Port:        port,
 		DeviceRetry: 20 * time.Millisecond,
 		HoldSettle:  500 * time.Millisecond,
+		// A bare pseudo-terminal never identifies itself, so every test that
+		// uses one waits this out before its client is served. At the
+		// production five seconds that doubled the time the whole suite takes;
+		// the tests that care about the real budget set their own.
+		ProbeIdentify: 300 * time.Millisecond,
 		// The standing supervision is off unless a test asks for it. It polls
 		// the controller whenever no client is attached, and a test reading
 		// raw bytes to check that a client's traffic crosses unchanged would

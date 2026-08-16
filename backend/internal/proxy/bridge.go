@@ -82,6 +82,12 @@ type Config struct {
 	// HoldSettle bounds how long the bridge waits for the machine to come to
 	// rest after a feed hold before it sends a soft reset.
 	HoldSettle time.Duration
+	// ProbeIdentify bounds how long the opening questions wait for the
+	// controller to give itself away. It is a setting rather than a constant
+	// for the tests' sake: a bare pseudo-terminal never answers, so every test
+	// that uses one waits out this budget before its client is served, and at
+	// the production value that doubled the time the suite takes.
+	ProbeIdentify time.Duration
 	// BeamConfirm bounds how long the bridge waits for the controller to say
 	// what its outputs are doing, after having asked it to change them.
 	//
@@ -222,6 +228,9 @@ func New(config Config, logger *log.Logger) *Bridge {
 	}
 	if config.HoldSettle <= 0 {
 		config.HoldSettle = 3 * time.Second
+	}
+	if config.ProbeIdentify <= 0 {
+		config.ProbeIdentify = probeIdentify
 	}
 	if config.BeamConfirm <= 0 {
 		// Fifty reports at the interval below: two and a half times the worst
@@ -430,7 +439,7 @@ func (b *Bridge) Run(ctx context.Context, ready chan<- struct{}) error {
 		go func(conn net.Conn) {
 			select {
 			case <-b.probed:
-			case <-time.After(probeGrace):
+			case <-time.After(b.probeGrace()):
 			}
 			b.serveClient(conn)
 		}(conn)
