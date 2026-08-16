@@ -371,6 +371,36 @@ beam is still on after the hold, the bridge sends the spindle-stop override
 enough. If the controller never says, and `$32=0` is known, it resets — that
 is not an open question. Otherwise it records that it could not confirm.
 
+### Steering from the web interface
+
+The Machine page shows what the machine is doing and can drive it: a jog pad
+with a step size, homing and unlock, feed hold and resume, a low-power beam for
+aiming, and a stop.
+
+It is bounded by what it will not do rather than by who is asking — the
+interface has no login, and adding one would mean typing the appliance password
+(which is root over SSH) into an unencrypted page.
+
+- Nothing at all unless `laserbridged` owns the port. ser2net cannot say what
+  the machine is doing and has nowhere to put a command.
+- Nothing while a client is connected. Two applications steering one laser is
+  the failure this appliance exists to prevent, and a jog injected into
+  LightBurn's stream would hand it an `ok` it never earned.
+- Except **Stop**, which ends the conflict rather than joining it: it takes the
+  machine over the way the watchdog does, telling the client and dropping it.
+
+**The aiming beam is held, not switched on.** The page renews a three-second
+lease every second; while it is held the beam counts as attended, and when it
+lapses the beam goes out. A closed laptop, a dropped Wi-Fi link or a browser tab
+that crashed all end with the laser off without anyone having to remember. It is
+a dead man's handle, and it is why the beam does not survive the page.
+
+**The stop button is not an emergency stop and is not labelled as one.** It
+sends a soft reset: the output goes off whatever `$32` says, the job ends, and a
+connected client is dropped because a controller that has been reset will not
+finish what it was sent. But it needs this appliance running, the network, the
+cable and the controller answering. Use the machine's own stop. See ADR 0019.
+
 ### The laser may not be on while nothing moves
 
 The disconnect handler reacts to a symptom. The hazard is the laser being on

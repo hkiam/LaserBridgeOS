@@ -63,7 +63,9 @@
   <div class="shell">
     <nav class="nav" aria-label="Main navigation">
       <button class="nav-item active" data-panel="dashboard">Dashboard</button>
-      <button class="nav-item" data-panel="grbl">GRBL Bridge</button>
+      <button class="nav-item" data-panel="machine">Machine</button>
+      <button class="nav-item" data-panel="grbl">GRBL settings</button>
+      <button class="nav-item" data-panel="journal">What happened</button>
       <button class="nav-item" data-panel="camera">Camera</button>
       <button class="nav-item" data-panel="system">System</button>
       <button class="nav-item" data-panel="logs">Logs</button>
@@ -112,11 +114,11 @@
         </article>
       </section>
 
-      <section class="panel" id="panel-grbl">
-        <div class="heading"><div><p class="eyebrow">SERIAL TO TCP</p><h1>GRBL Bridge</h1></div></div>
+      <section class="panel" id="panel-machine">
+        <div class="heading"><div><p class="eyebrow">WHAT THE MACHINE IS DOING</p><h1>Machine</h1></div></div>
 
         <article class="card machine-card" id="machine-card" hidden>
-          <div class="card-head"><h2>Machine</h2><span class="badge" id="machine-badge">UNKNOWN</span></div>
+          <div class="card-head"><h2>Reading</h2><span class="badge" id="machine-badge">UNKNOWN</span></div>
           <dl class="primary-stats compact">
             <div><dt>Bridge</dt><dd id="machine-bridge-state">—</dd></div>
             <div><dt>Client</dt><dd id="machine-client">none</dd></div>
@@ -128,7 +130,48 @@
             <div><dt>Transferred</dt><dd id="machine-bytes">—</dd></div>
           </dl>
           <p class="machine-note" id="machine-note" hidden></p>
-          <p class="machine-warning">The bridge can pause an unattended machine, but it depends on this appliance, the cable and the controller answering. It is not an emergency stop — use the machine's own.</p>
+        </article>
+
+        <article class="card control-card" id="control-card" hidden>
+          <div class="card-head"><h2>Steering</h2><span class="badge" id="control-badge">READY</span></div>
+          <p class="machine-note" id="control-blocked" hidden></p>
+
+          <div class="control-grid">
+            <div class="jog-pad">
+              <button class="button jog" data-axis="Y" data-sign="1" title="Y+">↑</button>
+              <button class="button jog" data-axis="X" data-sign="-1" title="X−">←</button>
+              <button class="button jog" data-axis="X" data-sign="1" title="X+">→</button>
+              <button class="button jog" data-axis="Y" data-sign="-1" title="Y−">↓</button>
+              <span class="jog-centre" id="jog-step-label">1 mm</span>
+            </div>
+
+            <div class="control-column">
+              <label>Step<select id="jog-step"><option>0.1</option><option selected>1</option><option>10</option><option>100</option></select><small>Millimetres per press.</small></label>
+              <label>Feed<input id="jog-feed" type="number" min="1" max="20000" value="1000"><small>mm/min for jogs.</small></label>
+              <div class="actions">
+                <button class="button jog" data-axis="Z" data-sign="1">Z ↑</button>
+                <button class="button jog" data-axis="Z" data-sign="-1">Z ↓</button>
+              </div>
+            </div>
+
+            <div class="control-column">
+              <div class="actions">
+                <button class="button control" data-command="home">Home ($H)</button>
+                <button class="button control" data-command="unlock">Unlock ($X)</button>
+              </div>
+              <div class="actions">
+                <button class="button control" data-command="hold">Feed hold</button>
+                <button class="button control" data-command="resume">Resume</button>
+              </div>
+              <label class="toggle aim-toggle"><input type="checkbox" id="aim-on"><span>Aiming beam</span></label>
+              <label>Aiming power<input id="aim-percent" type="number" min="1" max="100" value="2"><small>Per cent of $30. It stays on only while this page keeps asking — close the tab and it goes out.</small></label>
+            </div>
+          </div>
+
+          <div class="actions stop-row">
+            <button class="button danger" id="control-stop">Stop (soft reset)</button>
+            <p class="machine-warning">Ends the job and switches the output off, whatever <code>$32</code> says — and drops a connected client, because a controller that has been reset will not finish what it was sent. <strong>This is not an emergency stop.</strong> It needs this appliance, the network, the cable and the controller all working. Use the machine's own.</p>
+          </div>
         </article>
 
         <article class="card" id="ser2net-note" hidden>
@@ -138,17 +181,26 @@
             <li>the machine's state, position and laser output are not being read;</li>
             <li>a laser left on while nothing moves is not noticed, and not switched off;</li>
             <li>a client that disappears mid-job gets no feed hold and no soft reset — the machine finishes whatever is in its planner buffer;</li>
-            <li>nothing is recorded about alarms, errors or the line that caused them.</li>
+            <li>nothing is recorded about alarms, errors or the line that caused them;</li>
+            <li>and nothing on this page can steer the machine, because nothing here knows what it is doing.</li>
           </ul>
-          <p class="muted">Switch to laserbridged under Bridge service below to get them back. Either way, neither is an emergency stop — use the machine's own.</p>
+          <p class="muted">Switch to laserbridged under GRBL settings to get them back. Either way, neither is an emergency stop — use the machine's own.</p>
         </article>
+      </section>
 
+      <section class="panel" id="panel-journal">
+        <div class="heading"><div><p class="eyebrow">THE RECORD</p><h1>What happened</h1></div><button class="button ghost" id="journal-refresh">Refresh</button></div>
         <article class="card" id="journal-card" hidden>
-          <div class="card-head"><h2>What happened</h2><button class="button small ghost" id="journal-refresh">Refresh</button></div>
-          <p class="muted journal-intro">Alarms, errors and anything the bridge did on its own — with the line that caused it. Kept across a reboot.</p>
+          <p class="muted journal-intro">Alarms, errors and anything the bridge did on its own — with the line that caused it. Kept across a reboot and read back after one, so an incident survives the restart it caused.</p>
           <div id="journal"></div>
         </article>
+        <article class="card" id="journal-unavailable" hidden>
+          <p class="muted">The record is kept by laserbridged. With ser2net carrying the port there is nothing to record: it never knows what it is carrying.</p>
+        </article>
+      </section>
 
+      <section class="panel" id="panel-grbl">
+        <div class="heading"><div><p class="eyebrow">SERIAL TO TCP</p><h1>GRBL settings</h1></div></div>
         <form class="card form-card config-form" id="grbl-form">
           <div class="form-grid">
             <label class="wide">Serial device<input name="device" list="serial-devices" required autocomplete="off"><datalist id="serial-devices"></datalist><small>Stable /dev/serial/by-id paths are preferred.</small></label>

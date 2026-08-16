@@ -147,6 +147,11 @@ func Parse(line string) Report {
 // whether a feed hold switches the beam off.
 const LaserMode = "$32"
 
+// SpindleMax is GRBL's maximum spindle speed. It is what a percentage of laser
+// power is a percentage of, and assuming GRBL's default of 1000 when the
+// controller says otherwise would aim with the wrong power.
+const SpindleMax = "$30"
+
 func parseStatus(body string, report *Report) {
 	fields := strings.Split(body, "|")
 	if len(fields) == 0 {

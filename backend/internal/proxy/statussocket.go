@@ -23,9 +23,18 @@ import (
 //
 // The protocol is one line in, one JSON object out. "status" and an empty line
 // return the current status, "journal [n]" the recent record of what went
-// wrong; anything else is an error. Unknown commands are refused rather than
-// guessed at, because this socket is world-readable by design and the answer
-// to an unrecognised word should be a short one.
+// wrong, "command {json}" steers the machine; anything else is an error.
+// Unknown commands are refused rather than guessed at, because this socket is
+// world-readable by design and the answer to an unrecognised word should be a
+// short one.
+//
+// "command" is the exception to that openness. Reading the status is not a
+// secret and asking for it should not need doas; moving a machine is not in the
+// same class, so the kernel is asked who is at the other end and anyone but
+// root is refused. On this appliance that distinction is currently theoretical
+// - one account, and it may become root without a password - but "the status is
+// not a secret" was the entire argument for the permissions on this socket, and
+// it does not stretch to steering.
 type StatusSocket struct {
 	path   string
 	bridge *Bridge
@@ -95,6 +104,23 @@ func (s *StatusSocket) answer(conn net.Conn) {
 			limit, _ = strconv.Atoi(fields[1])
 		}
 		_ = encoder.Encode(s.bridge.Journal().Recent(limit))
+	case "command":
+		uid, err := peerUID(conn)
+		if err != nil || uid != 0 {
+			_ = encoder.Encode(CommandAnswer{Error: "steering is only accepted from root"})
+			return
+		}
+		var request CommandRequest
+		payload := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "command"))
+		if err := json.Unmarshal([]byte(payload), &request); err != nil {
+			_ = encoder.Encode(CommandAnswer{Error: "invalid command: " + err.Error()})
+			return
+		}
+		answer := CommandAnswer{}
+		if err := s.bridge.Do(request.Command, Jog{Axis: request.Axis, Distance: request.Distance, Feed: request.Feed}, request.Percent); err != nil {
+			answer.Error = err.Error()
+		}
+		_ = encoder.Encode(answer)
 	default:
 		_ = encoder.Encode(map[string]string{"error": "unknown command"})
 	}
@@ -139,6 +165,32 @@ func ReadStatusWithin(path string, timeout time.Duration) (Status, error) {
 	var status Status
 	err := ask(path, "status", &status, timeout)
 	return status, err
+}
+
+// CommandRequest is an operator's command on its way to the daemon, and
+// CommandAnswer is what came back. An empty Error means it was sent; it does
+// not mean the machine did anything, which only the machine can say.
+type CommandRequest struct {
+	Command  Command `json:"command"`
+	Axis     string  `json:"axis,omitempty"`
+	Distance float64 `json:"distance,omitempty"`
+	Feed     float64 `json:"feed,omitempty"`
+	Percent  int     `json:"percent,omitempty"`
+}
+
+type CommandAnswer struct {
+	Error string `json:"error,omitempty"`
+}
+
+// SendCommand asks the daemon to steer the machine.
+func SendCommand(path string, request CommandRequest) (CommandAnswer, error) {
+	payload, err := json.Marshal(request)
+	if err != nil {
+		return CommandAnswer{}, err
+	}
+	var answer CommandAnswer
+	err = ask(path, "command "+string(payload), &answer, askTimeout)
+	return answer, err
 }
 
 // ReadJournal asks the daemon what has gone wrong lately.

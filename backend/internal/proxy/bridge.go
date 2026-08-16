@@ -47,6 +47,11 @@ const (
 	feedHold  = byte('!')
 	statusReq = byte('?')
 	softReset = byte(0x18)
+	// resume is the counterpart to the feed hold, and jogCancel empties the
+	// jog queue without touching anything else - both real-time, both acted on
+	// the moment the controller reads them.
+	resume    = byte('~')
+	jogCancel = byte(0x85)
 	// spindleStop is GRBL 1.1's spindle-stop override. It acts only in the
 	// HOLD state and it TOGGLES: sending it to a controller whose output is
 	// already stopped switches the laser back on. It is only ever sent here on
@@ -209,6 +214,8 @@ type Bridge struct {
 	probed    chan struct{}
 	probeOnce sync.Once
 
+	// aim is the lease an operator holds while the aiming beam is on.
+	aim aimingBeam
 	// jobs is the appliance's notion of the work in front of the machine, as
 	// opposed to what the machine is doing this instant.
 	jobs jobTracker

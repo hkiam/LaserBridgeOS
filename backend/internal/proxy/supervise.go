@@ -89,7 +89,24 @@ func (b *Bridge) watch(ctx context.Context) {
 		if machine.HasPosition && (machine.Position != lastPosition || movedAt.IsZero()) {
 			lastPosition, movedAt = machine.Position, now
 		}
+		// A lease that has run out switches the beam off here, once. The page
+		// holding it renews every second, so this is a closed laptop, a lost
+		// network or a browser tab that went away - and the beam going out is
+		// the whole point of the lease.
+		if b.aim.expired(now) {
+			if err := b.sendLine(port, "M5"); err != nil {
+				b.logf("could not release the aiming beam: %v", err)
+			}
+			b.note("aim", "the aiming beam was released: nobody renewed it")
+		}
 		if machine.Beam != grbl.BeamOn {
+			beamOnSince = time.Time{}
+			continue
+		}
+		// Somebody is holding the aiming beam on and saying so every second.
+		// That is a stationary beam with a person behind it, which is exactly
+		// what both rules below exist to tell apart from one without.
+		if b.aim.live(now) {
 			beamOnSince = time.Time{}
 			continue
 		}

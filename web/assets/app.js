@@ -132,6 +132,7 @@ async function loadMachine() {
   } catch (error) {
     card.hidden = true;
     fallbackNote.hidden = true;
+    $('#control-card').hidden = true;
     return;
   }
   // With ser2net in charge there is nothing to ask. Hiding the card and saying
@@ -140,6 +141,8 @@ async function loadMachine() {
   // beam watchdog went with it. So the panel says what is not being watched.
   card.hidden = !answer.available;
   fallbackNote.hidden = answer.available;
+  $('#control-card').hidden = !answer.available;
+  $('#journal-unavailable').hidden = answer.available;
   if (!answer.available) return;
 
   const bridge = answer.bridge;
@@ -166,6 +169,8 @@ async function loadMachine() {
 
   // Anything the bridge did on its own accord is worth saying plainly: an
   // operator who finds a paused machine should not have to guess why.
+  updateSteering(bridge);
+
   const note = $('#machine-note');
   // Most specific first: a wrong baud rate explains everything else on the
   // page, so saying anything else while that is true would mislead.
@@ -600,6 +605,104 @@ $('#reboot').addEventListener('click', async () => {
 });
 $('#camera-preview').addEventListener('load', event => event.target.classList.add('loaded'));
 $('#camera-preview').addEventListener('error', event => event.target.classList.remove('loaded'));
+
+// Steering.
+//
+// Two rules decide what this part of the page may do, and both live in the
+// appliance rather than here - the buttons only reflect them. Nothing steers a
+// machine somebody else is steering, so everything but Stop is refused while a
+// client is connected. And the aiming beam is held on a lease: this page renews
+// it every second, and if it stops - a closed laptop, a lost network, a tab
+// that crashed - the beam goes out on its own. A switch would leave a laser on
+// behind a browser that is no longer there.
+let aimTimer = null;
+
+function updateSteering(bridge) {
+  const client = bridge.client || '';
+  const blocked = $('#control-blocked');
+  const badge = $('#control-badge');
+  // Stop is deliberately not disabled: it is the one command that ends the
+  // conflict rather than joining it.
+  $$('#control-card .button.jog, #control-card .button.control').forEach(b => { b.disabled = Boolean(client); });
+  $('#aim-on').disabled = Boolean(client);
+  if (client) {
+    badge.textContent = 'CLIENT IN CHARGE';
+    badge.className = 'badge stopped';
+    blocked.textContent = `${client} is connected and steering. The appliance will not send anything to a machine somebody else is driving — two applications on one laser is the failure it exists to prevent. Stop still works, and it ends their session as it goes.`;
+    blocked.hidden = false;
+    if (aimTimer) stopAiming();
+  } else {
+    badge.textContent = 'READY';
+    badge.className = 'badge running';
+    blocked.hidden = true;
+  }
+}
+
+async function steer(command, body) {
+  return request(`/api/grbl/control/${encodeURIComponent(command)}`, {
+    method: 'POST',
+    body: JSON.stringify(body || {})
+  });
+}
+
+function stopAiming() {
+  clearInterval(aimTimer);
+  aimTimer = null;
+  $('#aim-on').checked = false;
+  steer('aim-off').catch(() => {});
+}
+
+$('#jog-step').addEventListener('change', event => {
+  setText('#jog-step-label', `${event.target.value} mm`);
+});
+
+$('#aim-on').addEventListener('change', async event => {
+  if (!event.target.checked) { stopAiming(); return; }
+  const percent = Number($('#aim-percent').value) || 2;
+  try {
+    await steer('aim', {percent});
+    // Renewed twice per lease. Missing one renewal must not put the beam out
+    // during normal use; missing all of them must.
+    aimTimer = setInterval(() => {
+      steer('aim', {percent}).catch(() => stopAiming());
+    }, 1000);
+  } catch (error) {
+    event.target.checked = false;
+    toast(error.message, true);
+  }
+});
+
+document.addEventListener('click', async event => {
+  const jog = event.target.closest('.button.jog');
+  if (jog) {
+    const distance = Number($('#jog-step').value) * Number(jog.dataset.sign);
+    try {
+      await steer('jog', {axis: jog.dataset.axis, distance, feed: Number($('#jog-feed').value)});
+    } catch (error) { toast(error.message, true); }
+    return;
+  }
+  const control = event.target.closest('.button.control');
+  if (control) {
+    try {
+      await steer(control.dataset.command);
+      toast(`${control.dataset.command} sent`);
+    } catch (error) { toast(error.message, true); }
+  }
+});
+
+$('#control-stop').addEventListener('click', async () => {
+  try {
+    if (aimTimer) stopAiming();
+    await steer('stop');
+    toast('Soft reset sent; the output is off and the job is over');
+  } catch (error) { toast(error.message, true); }
+});
+
+// A page that goes away releases the beam at once rather than waiting for the
+// lease to run out. Best effort: if it does not arrive, the lease covers it.
+window.addEventListener('pagehide', () => {
+  if (aimTimer) navigator.sendBeacon?.('/api/grbl/control/aim-off');
+});
 
 async function start() {
   try {
