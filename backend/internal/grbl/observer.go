@@ -1,6 +1,7 @@
 package grbl
 
 import (
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -134,6 +135,8 @@ type Machine struct {
 	// version that told us so worth more than one slot.
 	Firmware string `json:"firmware,omitempty"`
 	Options  string `json:"options,omitempty"`
+	// SpindleMax is $30, what an S value of full power is on this controller.
+	SpindleMax int `json:"spindle_max,omitempty"`
 }
 
 func NewObserver() *Observer {
@@ -240,6 +243,11 @@ func (o *Observer) apply(report Report) {
 			o.machine.BeamReports = o.machine.Reports
 		}
 	case "setting":
+		if report.Setting == SpindleMax {
+			if value, err := strconv.Atoi(strings.TrimSpace(report.SettingValue)); err == nil && value > 0 {
+				o.machine.SpindleMax = value
+			}
+		}
 		if report.Setting == LaserMode {
 			if strings.TrimSpace(report.SettingValue) == "0" {
 				o.machine.LaserMode = SettingOff
@@ -281,9 +289,10 @@ func (o *Observer) apply(report Report) {
 			BeamReports: o.machine.Reports,
 			// A reset changes neither the firmware nor the stored settings, so
 			// what the controller told us about itself still holds.
-			LaserMode: o.machine.LaserMode,
-			Firmware:  o.machine.Firmware,
-			Options:   o.machine.Options,
+			LaserMode:  o.machine.LaserMode,
+			Firmware:   o.machine.Firmware,
+			Options:    o.machine.Options,
+			SpindleMax: o.machine.SpindleMax,
 		}
 	}
 }

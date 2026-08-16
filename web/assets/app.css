@@ -166,6 +166,22 @@ label.choice input { width: 17px; height: 17px; accent-color: var(--accent); }
   color: var(--muted);
 }
 
+/* Steering. The pad is finger-sized on purpose: it is used standing at a
+   machine, often with one hand, and a mis-click moves an axis. */
+.control-grid { display: grid; gap: 22px; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); align-items: start; }
+.jog-pad { display: grid; grid-template-columns: repeat(3, 54px); grid-template-rows: repeat(3, 54px); gap: 6px; justify-content: center; }
+.jog-pad .button { font-size: 18px; padding: 0; }
+.jog-pad .button[data-axis="Y"][data-sign="1"] { grid-area: 1 / 2; }
+.jog-pad .button[data-axis="X"][data-sign="-1"] { grid-area: 2 / 1; }
+.jog-pad .button[data-axis="X"][data-sign="1"] { grid-area: 2 / 3; }
+.jog-pad .button[data-axis="Y"][data-sign="-1"] { grid-area: 3 / 2; }
+.jog-centre { grid-area: 2 / 2; display: flex; align-items: center; justify-content: center; font: 650 11px/1 monospace; color: var(--muted); }
+.control-column { display: grid; gap: 12px; }
+.control-column .actions { margin: 0; }
+.aim-toggle { margin-top: 4px; }
+.stop-row { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); align-items: flex-start; gap: 16px; }
+.stop-row .machine-warning { margin: 0; flex: 1; }
+
 .journal-intro { margin: 0 0 0.75rem; font-size: 0.85rem; }
 .journal-row {
   display: grid;
