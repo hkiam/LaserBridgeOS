@@ -95,13 +95,26 @@ func TestJoggingDoesNotStartAJob(t *testing.T) {
 	waitFor(t, func() bool { return bridge.Status().Client == "" }, "the client to leave")
 	waitFor(t, func() bool { return !bridge.Status().Job.Running }, "the client's job to end")
 
+	// Everything from here on is the operator alone at the pad. What went into
+	// the record before it is the client's own doing: this simulator reports
+	// Run from the first status request, so a job legitimately began and ended
+	// with the client - and on a slow machine it also ended with "0 lines",
+	// because the client never sent one. Scanning the whole record for that
+	// wording therefore failed on CI and passed on a laptop, which is the worst
+	// way for a test to behave.
+	before := len(bridge.Journal().Recent(0))
+
 	sim.set("Jog", false)
 	time.Sleep(700 * time.Millisecond)
 	if job := bridge.Status().Job; job.Running {
 		t.Error("jogging started a job; an update would be refused for fifteen seconds after every arrow press")
 	}
-	for _, event := range bridge.Journal().Recent(0) {
-		if strings.HasPrefix(event.Text, "job ") && strings.Contains(event.Text, "0 lines") {
+	events := bridge.Journal().Recent(0)
+	if before > len(events) {
+		before = 0
+	}
+	for _, event := range events[before:] {
+		if strings.HasPrefix(event.Text, "job ") {
 			t.Errorf("a jog was written into the record as a job: %q", event.Text)
 		}
 	}
