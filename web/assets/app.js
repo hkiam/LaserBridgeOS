@@ -385,7 +385,18 @@ async function loadUpdateStatus() {
     const status = await request('/api/update/status');
     setText('#update-version', status.current_version || 'development');
     setText('#update-current-slot', (status.current_slot || '—').toUpperCase());
-    setText('#update-staged', status.staged_version ? `${status.staged_version} · slot ${status.staged_slot.toUpperCase()}` : 'None');
+    // Three different facts, and the middle one used to be missing entirely:
+    // what is running, what a rollback would boot into, and which slot the
+    // next boot will take. "Staged" showed the last installation whether or not
+    // it had already booted, so an appliance reported the same version twice
+    // and looked as though something were pending.
+    const other = (status.previous_slot || '—').toUpperCase();
+    setText('#update-previous', status.previous_version
+      ? `${status.previous_version} · slot ${other}`
+      : `slot ${other} · version not recorded yet`);
+    setText('#update-staged', status.reboot_required
+      ? `${status.staged_version} · slot ${status.staged_slot.toUpperCase()} — reboot to switch`
+      : `slot ${(status.current_slot || '—').toUpperCase()} · this one, nothing pending`);
     const badgeElement = $('#update-badge');
     badgeElement.textContent = status.reboot_required ? 'REBOOT REQUIRED' : 'READY';
     badgeElement.className = `badge ${status.reboot_required ? 'stopped' : 'running'}`;

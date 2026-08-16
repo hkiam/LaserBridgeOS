@@ -420,6 +420,14 @@ ssh-keygen -Y sign -f laserbridge_ed25519 -n laserbridge-update \
 Upload bundle and signature together. A signature proves the bundle came from
 the key holder; a password only proves the uploader knew it.
 
+The card shows three facts: what is **running now**, what **the other slot**
+holds, and which slot the **next boot** will take. The middle one is what makes
+the rollback button meaningful — it is the version you would land on. A slot's
+version lives inside its own read-only filesystem, which is not mounted while it
+is the inactive one, so the appliance writes it down when it installs into a
+slot and when a boot is confirmed. Until one of those has happened it says
+*version not recorded yet* rather than guessing.
+
 **Rolling back** is one button: *Boot previous slot next*, then reboot. An older
 slot reading a newer configuration file skips what it does not understand,
 reports what it skipped, and leaves the file alone — so booting the newer slot

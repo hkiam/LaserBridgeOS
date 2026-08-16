@@ -52,12 +52,31 @@ type State struct {
 	TargetSlot  string `json:"target_slot"`
 	SourceSlot  string `json:"source_slot"`
 	InstalledAt string `json:"installed_at"`
+	// Slots is what each slot holds, as far as anyone has been able to tell:
+	// filled in for the target when an update is written, and for the running
+	// slot every time a boot is confirmed.
+	//
+	// A slot's version lives in its own read-only filesystem, which is not
+	// mounted while it is the inactive one. Reading it would mean mounting a
+	// squashfs on every status request, several times a minute, to answer a
+	// question that only changes when something is installed - so it is
+	// written down at the two moments when it is known for free.
+	Slots map[string]string `json:"slots,omitempty"`
 }
 
 type Status struct {
 	CurrentSlot    string `json:"current_slot"`
 	PreviousSlot   string `json:"previous_slot"`
 	CurrentVersion string `json:"current_version"`
+	// PreviousVersion is what the other slot holds - what a rollback would
+	// boot into. Empty until something has been installed or confirmed while
+	// this appliance was keeping the record.
+	PreviousVersion string `json:"previous_version,omitempty"`
+	// StagedVersion and StagedSlot describe an update that is waiting for a
+	// reboot, and nothing else. They used to describe the last installation
+	// whether or not it had already booted, so an appliance running the update
+	// it installed an hour ago reported the same version as running and as
+	// staged - which reads as though something were still pending.
 	StagedVersion  string `json:"staged_version,omitempty"`
 	StagedSlot     string `json:"staged_slot,omitempty"`
 	RebootRequired bool   `json:"reboot_required"`
@@ -69,6 +88,10 @@ type Status struct {
 	PasswordAccepted     bool `json:"password_accepted"`
 	DefaultPasswordInUse bool `json:"default_password_in_use"`
 }
+
+// rollbackVersion is what the record holds for "boot the other slot", where
+// there is no bundle and therefore no version of its own.
+const rollbackVersion = "previous-slot"
 
 type SignatureVerifier interface {
 	Verify(bundlePath, signaturePath, authorizedKeysPath, workDir string) error
@@ -199,11 +222,13 @@ func (m *Manager) Install(bundlePath, signaturePath string) (State, error) {
 		now = m.Now().UTC()
 	}
 	state := State{Version: manifest.Version, TargetSlot: target, SourceSlot: current, InstalledAt: now.Format(time.RFC3339)}
-	stateData, _ := json.Marshal(state)
-	if err := os.MkdirAll(filepath.Join(m.dataDir(), "update"), 0700); err != nil {
-		return State{}, err
-	}
-	if err := atomicfile.Write(filepath.Join(m.dataDir(), "update", "state.json"), append(stateData, '\n'), 0600); err != nil {
+	// Both slots are known at this moment: the one being written holds what the
+	// bundle says, and the one this is running from holds what this is running.
+	state.Slots = m.slotsWith(map[string]string{
+		target:  manifest.Version,
+		current: readTrimmed(m.versionPath()),
+	})
+	if err := m.writeState(state); err != nil {
 		return State{}, err
 	}
 	// This is the commit point. Root and boot payloads are fully synced first.
@@ -226,17 +251,51 @@ func withinSize(path string, limit int64, label string) error {
 
 func (m *Manager) Status() Status {
 	current := m.CurrentSlot()
-	status := Status{CurrentSlot: current, PreviousSlot: otherSlot(current), CurrentVersion: readTrimmed(m.versionPath()), SignatureAccepted: true}
-	data, err := os.ReadFile(filepath.Join(m.dataDir(), "update", "state.json"))
-	if err == nil {
-		var state State
-		if json.Unmarshal(data, &state) == nil {
-			status.StagedVersion = state.Version
-			status.StagedSlot = state.TargetSlot
-			status.RebootRequired = state.TargetSlot != "" && state.TargetSlot != current
+	previous := otherSlot(current)
+	status := Status{CurrentSlot: current, PreviousSlot: previous, CurrentVersion: readTrimmed(m.versionPath()), SignatureAccepted: true}
+	state := m.readState()
+	status.PreviousVersion = state.Slots[previous]
+	// Staged means waiting for a reboot. An installation that has already been
+	// booted into is not staged, it is running - saying it twice was the whole
+	// of the confusion this answers.
+	if state.TargetSlot != "" && state.TargetSlot != current {
+		status.RebootRequired = true
+		status.StagedSlot = state.TargetSlot
+		status.StagedVersion = state.Version
+		if known := state.Slots[state.TargetSlot]; status.StagedVersion == rollbackVersion && known != "" {
+			// A rollback records no version of its own - it is asking for
+			// whatever is over there. Name it if it is known.
+			status.StagedVersion = known
 		}
 	}
 	return status
+}
+
+func (m *Manager) readState() State {
+	var state State
+	data, err := os.ReadFile(filepath.Join(m.dataDir(), "update", "state.json"))
+	if err != nil {
+		return state
+	}
+	if json.Unmarshal(data, &state) != nil {
+		return State{}
+	}
+	return state
+}
+
+// slotsWith merges what is now known into what was known before, so that one
+// slot being written does not erase what the record says about the other.
+func (m *Manager) slotsWith(known map[string]string) map[string]string {
+	slots := map[string]string{}
+	for slot, version := range m.readState().Slots {
+		slots[slot] = version
+	}
+	for slot, version := range known {
+		if version != "" {
+			slots[slot] = version
+		}
+	}
+	return slots
 }
 
 func (m *Manager) StageRollback() (string, error) {
@@ -255,9 +314,9 @@ func (m *Manager) StageRollback() (string, error) {
 	if m.Now != nil {
 		now = m.Now().UTC()
 	}
-	state := State{Version: "previous-slot", TargetSlot: target, SourceSlot: m.CurrentSlot(), InstalledAt: now.Format(time.RFC3339)}
-	stateData, _ := json.Marshal(state)
-	if err := atomicfile.Write(filepath.Join(m.dataDir(), "update", "state.json"), append(stateData, '\n'), 0600); err != nil {
+	state := State{Version: rollbackVersion, TargetSlot: target, SourceSlot: m.CurrentSlot(), InstalledAt: now.Format(time.RFC3339)}
+	state.Slots = m.slotsWith(map[string]string{m.CurrentSlot(): readTrimmed(m.versionPath())})
+	if err := m.writeState(state); err != nil {
 		return "", err
 	}
 	if err := atomicfile.Write(filepath.Join(bootDir, "boot", "active-slot.cfg"), []byte("set laserbridge_slot="+target+"\n"), 0644); err != nil {
@@ -292,17 +351,35 @@ func (m *Manager) ConfirmBoot() error {
 	if err := writeGrubEnvironment(filepath.Join(bootDir, "boot", "grubenv"), environment); err != nil {
 		return fmt.Errorf("reset boot counter: %w", err)
 	}
+	// What this slot holds is known for free at exactly this moment, and this
+	// is the only place that learns it without mounting anything. Written down
+	// here, the interface can say what a rollback would boot into rather than
+	// asking somebody to remember.
+	state := m.readState()
+	state.Slots = m.slotsWith(map[string]string{current: readTrimmed(m.versionPath())})
+
 	activePath := filepath.Join(bootDir, "boot", "active-slot.cfg")
 	if readTrimmed(activePath) == "set laserbridge_slot="+current {
-		return nil
+		return m.writeState(state)
 	}
 	if err := atomicfile.Write(activePath, []byte("set laserbridge_slot="+current+"\n"), 0644); err != nil {
 		return fmt.Errorf("record recovered slot %s: %w", current, err)
 	}
-	if err := os.Remove(filepath.Join(m.dataDir(), "update", "state.json")); err != nil && !os.IsNotExist(err) {
+	// GRUB fell back, so the update that was waiting for a reboot is the one
+	// that could not boot. Forget that it was asked for - but not what the
+	// slots hold, which is the thing worth knowing afterwards.
+	return m.writeState(State{Slots: state.Slots})
+}
+
+func (m *Manager) writeState(state State) error {
+	data, err := json.Marshal(state)
+	if err != nil {
 		return err
 	}
-	return nil
+	if err := os.MkdirAll(filepath.Join(m.dataDir(), "update"), 0700); err != nil {
+		return err
+	}
+	return atomicfile.Write(filepath.Join(m.dataDir(), "update", "state.json"), append(data, '\n'), 0600)
 }
 
 const grubEnvironmentSize = 1024
