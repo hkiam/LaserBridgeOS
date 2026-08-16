@@ -1,0 +1,10 @@
+# GitHub Pages for the user guide. The engineering documentation stays in the
+# README; this site is what somebody standing at a laser needs.
+title: LaserBridgeOS
+description: A GRBL laser cutter on the network, with the safety a USB cable used to give you for free.
+theme: jekyll-theme-cayman
+show_downloads: false
+# The ADRs live here too and are worth reading, but they are not pages of the
+# guide: they are linked from it rather than listed as sections.
+exclude:
+  - adr/README.md

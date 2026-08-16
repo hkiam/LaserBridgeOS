@@ -1,28 +1,100 @@
 # LaserBridgeOS
 
-LaserBridgeOS is a small, headless Alpine Linux appliance for exposing a
-GRBL controller and a USB camera on a local network. It boots from an
-immutable SquashFS root, keeps runtime state in RAM, and stores the small
-amount of durable state under `/data`.
+**A GRBL laser cutter on the network, with the safety a USB cable used to give
+you for free.**
+
+LaserBridgeOS is a small headless appliance — an old mini PC, a thin client, a
+retired office box — that sits beside a GRBL laser, holds its USB serial port,
+and offers it on the local network. LightBurn connects over Wi-Fi or Ethernet
+and cuts as if it were plugged in. Meanwhile the appliance watches the
+conversation it is carrying, and acts when the machine is left in a state
+nobody would leave it in on purpose.
+
+![The Machine page: position, camera, steering and console](docs/images/machine-position.jpg)
+
+**→ [User guide](https://hkiam.github.io/LaserBridgeOS/)** — installation, first
+boot, everyday use, and what each safety mechanism actually does.
+
+## Why this exists
+
+Putting a serial port on the network is not hard. `ser2net` does it in four
+lines of configuration, and this appliance still ships it as the fallback
+(ADR 0011). What is hard is everything that follows from having done it.
+
+A USB cable fails in one way: it comes out, and the job stops. A network link
+fails in ways that look nothing like that. Wi-Fi drops while the planner buffer
+still holds thirty seconds of work. A laptop suspends with its TCP connection
+technically alive. LightBurn hangs while the socket stays open. In every one of
+those cases the sender stops sending — and on a laser in `M3` constant-power
+mode, a stream that stops leaves the beam on at its last setting while the
+machine stands still. That is a hole in the workpiece at best.
+
+A dumb serial-to-TCP forwarder cannot help, because it does not know what it is
+carrying. LaserBridgeOS reads along with the GRBL conversation it forwards —
+never altering a byte — so it can tell the difference between a machine that is
+cutting, a machine that is paused, and a machine that is burning a hole in one
+spot with nobody there.
+
+> **It is not an emergency stop and will never be one.** Everything below needs
+> this appliance running, the network up, the cable seated and the controller
+> answering. Keep using the red mushroom on the machine. This is the second line
+> of defence, for the failures nobody is standing next to.
+
+## What it does
+
+| | |
+| --- | --- |
+| **Bridges** | Raw TCP on port 23 to the controller's USB serial port, byte for byte, at the configured baud rate. One client at a time, on purpose. |
+| **Watches** | Parses GRBL's status reports as they pass. Knows the machine state, the position, whether the laser output is on, and what the firmware and `$32` are. |
+| **Intervenes** | A client that disappears mid-job, or a beam that stays on while nothing moves, gets a feed hold — escalating to a spindle stop and a soft reset only as far as the controller's own reports say is needed. |
+| **Steers** | A jog pad, homing, go-to coordinates, a low-power aiming beam on a dead man's lease, and a console for typing commands — from any browser, when no sender is connected. |
+| **Records** | Alarms, errors, and everything it did on its own, with the G-code line that caused it. Kept across a reboot, so an incident survives the restart it caused. |
+| **Shows** | The camera beside the readout, so the machine can be watched from the same page it is steered from. |
+| **Survives** | Immutable A/B system slots, signed updates, a boot-attempt counter, and a hardware watchdog. |
+
+## How it fits together
+
+```mermaid
+flowchart LR
+    LB["LightBurn<br/>or any GRBL sender"] -- "raw TCP :23" --> DAEMON
+    BROWSER["Browser"] -- "HTTP :80" --> WEB
+    BROWSER -- "MJPEG :8080" --> CAM
+
+    subgraph APPLIANCE ["LaserBridgeOS appliance"]
+        DAEMON["laserbridged<br/><i>bridge, observer, watchdog</i>"]
+        WEB["laserbridge-web<br/><i>API and interface</i>"]
+        CAM["ustreamer"]
+        WEB <-- "unix socket<br/>status, journal, commands" --> DAEMON
+    end
+
+    DAEMON -- "USB serial 115200" --> GRBL["GRBL 1.1 controller"]
+    GRBL --> LASER["laser"]
+    USBCAM["USB camera"] --> CAM
+```
+
+Every byte between the sender and the controller is forwarded unchanged and
+unbuffered — GRBL's real-time control bytes (`?`, `!`, `~`, `0x18`) mean nothing
+to the bridge and everything to the controller. The observer is fed a *copy* of
+what has already been delivered, so a misparsed line can produce a wrong number
+on a status page but never a wrong byte at the controller.
+
+The serial port is opened once, when the daemon starts, and held for its
+lifetime. Opening a USB serial adapter toggles DTR, which resets an
+Arduino-based GRBL controller — so a bridge that reopened the port per
+connection would reset the machine every time LightBurn came back.
 
 ## LightBurn and older GRBL lasers
 
-LaserBridgeOS is an ideal companion for LightBurn's GRBL network mode. It
-turns the USB serial connection of a GRBL laser into a raw TCP endpoint at
-`laserbridge.local:23`. LightBurn can therefore reach the controller over the
-local network while LaserBridgeOS remains a transparent bridge and does not
-take over job processing.
+LaserBridgeOS is an ideal companion for LightBurn's GRBL network mode. It turns
+the USB serial connection of a GRBL laser into a raw TCP endpoint at
+`laserbridge.local:23`. LightBurn reaches the controller over the local network
+while LaserBridgeOS remains a transparent bridge and does not take over job
+processing.
 
 This is especially useful for making older USB-only machines, such as a
 SCULPFUN S9, network-capable without replacing their controller. The laser can
 stay in the workshop while LightBurn runs on another computer connected by
 Ethernet or Wi-Fi.
-
-```text
-LightBurn PC ── Ethernet / Wi-Fi ── LaserBridgeOS ── USB ── GRBL laser
-                                          │
-                                          └── USB camera
-```
 
 ### Connect from LightBurn
 
@@ -148,6 +220,11 @@ tcp://laserbridge.local:23
 http://laserbridge.local:8080
 ```
 
+The dashboard is what greets you: whether the bridge and the camera are
+running, where the appliance can be reached, and what the box itself is doing.
+
+![The dashboard](docs/images/dashboard.jpg)
+
 > **Note on the captive-portal window.** macOS and iOS open a small
 > stripped-down window when you join the setup hotspot. It works for the
 > wizard but **cannot save downloads**, so the key download appears to do
@@ -192,6 +269,24 @@ authentication off.
 
 ## A/B system updates
 
+The system lives in two immutable slots. An update is written to the one that
+is not running, and only the last step points the next boot at it — so a bundle
+that fails halfway leaves the appliance exactly as it was.
+
+```mermaid
+flowchart LR
+    subgraph DISK ["the disk"]
+        ESP["<b>LBBOOT</b> (ESP)<br/>GRUB, both kernels,<br/>active-slot.cfg, grubenv"]
+        A["<b>root A</b><br/>squashfs, read-only"]
+        B["<b>root B</b><br/>squashfs, read-only"]
+        DATA["<b>/data</b> (ext4)<br/>config, keys, logs, journal<br/><i>shared by both slots</i>"]
+    end
+    UP["signed .lbu"] -- "1. verify signature<br/>and every checksum" --> B
+    B -- "2. write the inactive slot" --> B
+    B -- "3. point the next boot here" --> ESP
+    ESP -- "boots" --> A
+```
+
 `make image` also creates an update bundle for the built version. Updates are
 deliberately local and owner-authorized, in one of two ways.
 
@@ -214,6 +309,8 @@ A signature proves the bundle came from the key holder; a password only
 proves the uploader knew it — and sends it across the network in clear text,
 where it is also the SSH login and, through `doas`, root. Signatures are the
 better path wherever a second machine can reach this one. See ADR 0007.
+
+![The update card: which slot is running, which is staged](docs/images/system-update.jpg)
 
 The appliance verifies the OpenSSH signature and every payload checksum,
 writes only the inactive root slot, and changes the next boot slot last. The
@@ -412,6 +509,8 @@ The Machine page is everything about the machine in one place: the readout, the
 steering, the camera image and the console, with the record and the bridge
 settings folded away underneath it.
 
+![Steering and console side by side](docs/images/machine-console.jpg)
+
 It shows where the head is in **work coordinates**, large, with machine
 coordinates underneath in small type — the operator sets the work zero and works
 to it, and the machine coordinates are what the limits and the record are in.
@@ -515,6 +614,33 @@ The second one has to be generous: piercing thick material is a stationary burn
 on purpose. Set it above your longest pierce. Both end in the same ladder, and
 both stay out of it entirely when `on_disconnect` is `none`.
 
+**The ladder.** Every rung is decided by what the controller says about itself,
+not by what the appliance hopes. It stops at the first rung that works, and it
+never sends a step twice:
+
+```mermaid
+flowchart TD
+    T["client gone mid-job,<br/>or beam on while nothing moves"] --> HOLD["<b>!</b> feed hold"]
+    HOLD --> ASK{"ask the controller:<br/>is the output off?<br/><i>GRBL's own A: field</i>"}
+    ASK -- "yes" --> KEEP["stop here<br/><i>position kept, job resumable</i>"]
+    ASK -- "no, and it is in HOLD" --> SPIN["<b>0x9E</b> spindle-stop override"]
+    SPIN --> ASK2{"output off now?"}
+    ASK2 -- "yes" --> KEEP
+    ASK2 -- "no" --> WAIT
+    ASK -- "it did not say" --> NOTE["record that nothing<br/>could be confirmed"]
+    NOTE --> WAIT["wait for the axes<br/>to come to rest"]
+    WAIT --> RESET["<b>0x18</b> soft reset"]
+    RESET --> END["output off whatever $32 says,<br/><i>job over, client dropped</i>"]
+```
+
+`$32` is why the first rung can be enough: in laser mode a feed hold switches
+the beam off. On a controller where `$32` is 0 the laser is a spindle, and a
+feed hold deliberately leaves a spindle running — the appliance knows the
+difference because it asked, and goes straight for the reset. The spindle-stop
+override is a *toggle* and acts only in HOLD, so it is only ever sent on
+positive evidence that the output is on: sending it to a controller whose
+output is already off would switch the laser back on.
+
 The check needs a status report that is not stale, so the appliance asks for
 one when nobody else has for a second. During a job LightBurn polls several
 times a second and the appliance stays quiet; when the conversation stops, it
@@ -560,7 +686,11 @@ defence, not the first.
 ### What happened
 
 A job that fails at three in the morning leaves a stopped machine and no
-explanation. The bridge keeps one:
+explanation. The bridge keeps one — on the Machine page, folded out:
+
+![The record, with every command attributed to the session that sent it](docs/images/machine-record.jpg)
+
+The same thing over the API and the command line:
 
 ```console
 $ laserbridge grbl-journal
@@ -718,6 +848,35 @@ Each recovery mechanism here covers something specific, and all of them need
 the kernel to still be running: a bridge that exits is respawned, a bridge that
 hangs is restarted by the web backend, a slot that never boots is replaced by
 the other one after three attempts.
+
+Five layers, each covering the failure the one below it cannot see:
+
+```mermaid
+flowchart TB
+    subgraph L5 ["the machine"]
+        BEAM["<b>beam watchdog</b><br/>laser on with nobody there,<br/>or on while nothing moves<br/><i>→ the ladder</i>"]
+    end
+    subgraph L4 ["the sender"]
+        KEEP["<b>TCP keepalive</b><br/>5 s idle, 3 probes, 2 s apart<br/><i>→ a dead laptop is noticed in ~11 s</i>"]
+    end
+    subgraph L3 ["the bridge"]
+        SUP["<b>OpenRC supervise-daemon</b><br/><i>→ restarts a process that exited</i>"]
+        POLL["<b>web backend asks every 15 s</b><br/>three unanswered questions<br/><i>→ restarts a process that hung</i>"]
+    end
+    subgraph L2 ["the system"]
+        HW["<b>hardware watchdog</b><br/>/dev/watchdog, fed every 10 s<br/><i>→ resets a board whose kernel stopped</i>"]
+        PANIC["<b>panic_on_oops + panic=10</b>"]
+    end
+    subgraph L1 ["the image"]
+        AB["<b>A/B slots and boot counter</b><br/>three unconfirmed attempts<br/><i>→ boots the other slot</i>"]
+    end
+    L5 --> L4 --> L3 --> L2 --> L1
+```
+
+Each arrow means *"and if that layer is the thing that failed"*. The beam
+watchdog needs the daemon; the daemon needs the kernel; the kernel needs a slot
+that boots. Nothing here is an emergency stop, and the chain is why: every layer
+assumes the ones under it are working.
 
 A kernel that has stopped scheduling userspace is covered by a hardware
 watchdog. `laserbridge watchdog` holds `/dev/watchdog` open and writes to it
