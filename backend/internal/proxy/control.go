@@ -269,9 +269,18 @@ func (b *Bridge) Do(request CommandRequest) error {
 			return nil
 		}
 		lines := aimLines(b.spindleFor(percent))
+		if err := b.sendLines(port, lines...); err != nil {
+			// The lease is taken before the beam is lit, which is the right
+			// order - the watchdog must never find a beam nobody is holding.
+			// But a send that failed leaves a lease on a laser that is off, and
+			// three seconds later the supervisor sends an M5 for a beam that
+			// was never lit. That was the whole of what the workshop saw: an
+			// error on the button, and one lonely M5 in the console.
+			b.aim.release()
+			return err
+		}
 		return b.commanded(command, holder,
-			strings.Join(lines, "; ")+" (aiming beam at "+strconv.Itoa(percent)+"%)",
-			b.sendLines(port, lines...))
+			strings.Join(lines, "; ")+" (aiming beam at "+strconv.Itoa(percent)+"%)", nil)
 	case CommandAimOff:
 		if err := b.aim.releaseBy(holder); err != nil {
 			return err
@@ -540,6 +549,18 @@ func (b *Bridge) sendLines(port *serial.Port, lines ...string) error {
 func (b *Bridge) release(count int) {
 	for i := 0; i < count; i++ {
 		b.acknowledged()
+	}
+}
+
+// forgetInjected drops every slot at once, for the one event that answers for
+// all of them: the controller restarted with the lines still in its buffer.
+func (b *Bridge) forgetInjected() {
+	for {
+		select {
+		case <-b.injected:
+		default:
+			return
+		}
 	}
 }
 

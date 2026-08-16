@@ -119,3 +119,72 @@ func TestJoggingDoesNotStartAJob(t *testing.T) {
 		}
 	}
 }
+
+// Reported from the workshop: the aiming beam could not be switched on - "the
+// controller has not answered the last commands yet" - while the jog pad worked
+// perfectly well, and the console showed a single M5 nobody had asked for.
+//
+// Three faults, all in this file's subject: what answers for a line.
+func TestAnErrorAnswersForALineJustLikeAnOk(t *testing.T) {
+	controller, _, bridge := startBridgeWith(t, func(c *Config) {})
+	waitFor(t, func() bool { return bridge.Status().Device != "" }, "the port to open")
+
+	// A homing cycle refused with error:9 is the everyday way this happens.
+	for i := 0; i < outstandingLines; i++ {
+		if err := bridge.Do(CommandRequest{Command: CommandUnlock, Holder: "holder"}); err != nil {
+			t.Fatalf("line %d was refused: %v", i+1, err)
+		}
+	}
+	if err := bridge.Do(CommandRequest{Command: CommandUnlock, Holder: "holder"}); err != ErrStillWorking {
+		t.Fatalf("err = %v, want the queue to be full", err)
+	}
+	for i := 0; i < outstandingLines; i++ {
+		if _, err := controller.Write([]byte("error:9\r\n")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitFor(t, func() bool {
+		return bridge.Do(CommandRequest{Command: CommandUnlock, Holder: "holder"}) == nil
+	}, "a refused line to release its slot")
+}
+
+func TestAResetAnswersForEveryLineAtOnce(t *testing.T) {
+	controller, _, bridge := startBridgeWith(t, func(c *Config) {})
+	waitFor(t, func() bool { return bridge.Status().Device != "" }, "the port to open")
+
+	for i := 0; i < outstandingLines; i++ {
+		if err := bridge.Do(CommandRequest{Command: CommandUnlock, Holder: "holder"}); err != nil {
+			t.Fatalf("line %d was refused: %v", i+1, err)
+		}
+	}
+	// The adapter was replugged, or somebody pressed Stop. Either way the
+	// controller's buffer is empty and nothing in it will ever be answered.
+	if _, err := controller.Write([]byte("Grbl 1.1f ['$' for help]\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		return bridge.Do(CommandRequest{Command: CommandUnlock, Holder: "holder"}) == nil
+	}, "the restart to release every slot")
+}
+
+func TestAnAimThatCouldNotBeSentDoesNotHoldTheLease(t *testing.T) {
+	controller, _, bridge := startBridgeWith(t, func(c *Config) {})
+	waitFor(t, func() bool { return bridge.Status().Device != "" }, "the port to open")
+	_ = controller
+
+	for i := 0; i < outstandingLines; i++ {
+		if err := bridge.Do(CommandRequest{Command: CommandUnlock, Holder: "holder"}); err != nil {
+			t.Fatalf("line %d was refused: %v", i+1, err)
+		}
+	}
+	if err := bridge.Do(CommandRequest{Command: CommandAim, Percent: 2, Holder: "holder"}); err != ErrStillWorking {
+		t.Fatalf("err = %v, want the aiming beam refused with a full queue", err)
+	}
+	// The lease is taken before the beam is lit, on purpose. A send that failed
+	// must give it back: otherwise the supervisor finds an expired lease three
+	// seconds later and sends an M5 for a laser that was never on - which is
+	// exactly the single, unexplained M5 the console showed.
+	if bridge.Aiming() {
+		t.Fatal("a beam that was never lit is being held")
+	}
+}

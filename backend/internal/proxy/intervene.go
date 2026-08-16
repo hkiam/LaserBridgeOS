@@ -378,8 +378,35 @@ func (b *Bridge) noteController() {
 	b.note("device", what)
 }
 
+// beginProbe closes the accept gate again for another round of questions. A
+// client that arrives meanwhile waits at the TCP level, exactly as it does
+// while the first questions are being asked.
+func (b *Bridge) beginProbe() {
+	b.probeMu.Lock()
+	defer b.probeMu.Unlock()
+	if !b.probeClosed {
+		// A probe is already running, and its gate is the one to wait on.
+		return
+	}
+	b.probed = make(chan struct{})
+	b.probeClosed = false
+}
+
+// probeGate is what a waiting connection watches.
+func (b *Bridge) probeGate() <-chan struct{} {
+	b.probeMu.Lock()
+	defer b.probeMu.Unlock()
+	return b.probed
+}
+
 func (b *Bridge) finishProbe() {
-	b.probeOnce.Do(func() { close(b.probed) })
+	b.probeMu.Lock()
+	defer b.probeMu.Unlock()
+	if b.probeClosed {
+		return
+	}
+	close(b.probed)
+	b.probeClosed = true
 }
 
 // beamPollInterval is how fast the bridge asks while it is waiting for the

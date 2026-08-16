@@ -352,11 +352,19 @@ is a real absence rather than nobody having asked - so it also catches a
 controller that never answers at all: wrong device, wrong baud rate, dead
 board. It is reported, never acted on.
 
-`laser_mode` is GRBL's `$32`, picked up from the settings dump LightBurn
-requests when it connects. The appliance does not ask for it itself: `$$` is a
-queued command and GRBL answers those with `ok`, and an `ok` the client did not
-earn desynchronises its flow control - which does not fail a job, it corrupts
-one.
+`laser_mode` is GRBL's `$32`, and everything the appliance does about an
+unattended laser turns on it. It is asked for in the one window where the
+question is safe: right after the serial port opens, before any client has been
+handed to the bridge. `$$` is a queued command and GRBL answers those with `ok`;
+an `ok` the client did not earn desynchronises its flow control, which does not
+fail a job but corrupts one — so a connection that arrives during those few
+seconds is accepted at the TCP level and simply held, with the answers going to
+nobody.
+
+The questions are put again every time the port is opened, replug included. An
+adapter that is pulled and plugged back in resets the controller, and what was
+known about the old one went with it — leaving the page saying "Controller not
+identified" beside a machine that was otherwise answering perfectly well.
 
 ### When the client disappears mid-job
 
